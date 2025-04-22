@@ -1,9 +1,12 @@
-// manualDiagnostics.js
 (function () {
     console.log("manualDiagnostics.js loaded");
 
-    function updateManualDiagnostics() {
-        const model = window.editor && window.editor.getModel();
+    /**
+     * Analyze the content of a single Monaco editor and set markers.
+     * @param {monaco.editor.IStandaloneCodeEditor} editorInstance
+     */
+    function updateManualDiagnostics(editorInstance) {
+        const model = editorInstance.getModel();
         if (!model) return;
 
         const markers = [];
@@ -15,20 +18,19 @@
         const braceStack = [];
         const bracketStack = [];
 
-        lines.forEach((line, index) => {
-            const lineNumber = index + 1;
+        lines.forEach((line, idx) => {
+            const lineNumber = idx + 1;
             const trimmed = line.trim();
 
-            // Check for a missing semicolon on lines that are non-empty, not comments,
-            // and don't end with a semicolon or a block delimiter.
+            // Missing semicolon diagnostics
             if (
                 trimmed &&
                 !trimmed.endsWith(';') &&
                 !trimmed.endsWith('{') &&
                 !trimmed.endsWith('}') &&
-                !trimmed.startsWith('//') &&      // ignore single-line comments
-                !trimmed.startsWith('*') &&        // ignore block comment lines
-                !/^(if|for|while|switch|else)(\s*\(.*\))?$/.test(trimmed) // ignore common control structures
+                !trimmed.startsWith('//') &&
+                !trimmed.startsWith('*') &&
+                !/^(if|for|while|switch|else)(\s*\(.*\))?$/.test(trimmed)
             ) {
                 markers.push({
                     startLineNumber: lineNumber,
@@ -40,109 +42,74 @@
                 });
             }
 
-            // Process each character to track opening and closing symbols.
+            // Unmatched symbol diagnostics
             for (let col = 0; col < line.length; col++) {
                 const ch = line[col];
-                const column = col + 1; // Monaco uses 1-indexed columns
-                if (ch === '(') {
-                    parenStack.push({line: lineNumber, column: column});
-                } else if (ch === ')') {
-                    if (parenStack.length > 0) {
-                        parenStack.pop();
-                    } else {
-                        markers.push({
-                            startLineNumber: lineNumber,
-                            startColumn: column,
-                            endLineNumber: lineNumber,
-                            endColumn: column + 1,
-                            message: "Unmatched closing parenthesis.",
-                            severity: monaco.MarkerSeverity.Error
-                        });
-                    }
-                } else if (ch === '{') {
-                    braceStack.push({line: lineNumber, column: column});
-                } else if (ch === '}') {
-                    if (braceStack.length > 0) {
-                        braceStack.pop();
-                    } else {
-                        markers.push({
-                            startLineNumber: lineNumber,
-                            startColumn: column,
-                            endLineNumber: lineNumber,
-                            endColumn: column + 1,
-                            message: "Unmatched closing brace.",
-                            severity: monaco.MarkerSeverity.Error
-                        });
-                    }
-                } else if (ch === '[') {
-                    bracketStack.push({line: lineNumber, column: column});
-                } else if (ch === ']') {
-                    if (bracketStack.length > 0) {
-                        bracketStack.pop();
-                    } else {
-                        markers.push({
-                            startLineNumber: lineNumber,
-                            startColumn: column,
-                            endLineNumber: lineNumber,
-                            endColumn: column + 1,
-                            message: "Unmatched closing bracket.",
-                            severity: monaco.MarkerSeverity.Error
-                        });
-                    }
+                const column = col + 1;
+                switch (ch) {
+                    case '(':
+                        parenStack.push({line: lineNumber, column});
+                        break;
+                    case ')':
+                        if (parenStack.length) parenStack.pop();
+                        else markers.push(makeMarker(lineNumber, column, "Unmatched closing parenthesis.", monaco.MarkerSeverity.Error));
+                        break;
+                    case '{':
+                        braceStack.push({line: lineNumber, column});
+                        break;
+                    case '}':
+                        if (braceStack.length) braceStack.pop();
+                        else markers.push(makeMarker(lineNumber, column, "Unmatched closing brace.", monaco.MarkerSeverity.Error));
+                        break;
+                    case '[':
+                        bracketStack.push({line: lineNumber, column});
+                        break;
+                    case ']':
+                        if (bracketStack.length) bracketStack.pop();
+                        else markers.push(makeMarker(lineNumber, column, "Unmatched closing bracket.", monaco.MarkerSeverity.Error));
+                        break;
                 }
             }
         });
 
-        // Any remaining opening symbols are unmatched.
-        parenStack.forEach(pos => {
-            markers.push({
-                startLineNumber: pos.line,
-                startColumn: pos.column,
-                endLineNumber: pos.line,
-                endColumn: pos.column + 1,
-                message: "Unmatched opening parenthesis.",
-                severity: monaco.MarkerSeverity.Error
-            });
-        });
-        braceStack.forEach(pos => {
-            markers.push({
-                startLineNumber: pos.line,
-                startColumn: pos.column,
-                endLineNumber: pos.line,
-                endColumn: pos.column + 1,
-                message: "Unmatched opening brace.",
-                severity: monaco.MarkerSeverity.Error
-            });
-        });
-        bracketStack.forEach(pos => {
-            markers.push({
-                startLineNumber: pos.line,
-                startColumn: pos.column,
-                endLineNumber: pos.line,
-                endColumn: pos.column + 1,
-                message: "Unmatched opening bracket.",
-                severity: monaco.MarkerSeverity.Error
-            });
-        });
+        // Any remaining opening symbols are unmatched
+        parenStack.forEach(pos => markers.push(makeMarker(pos.line, pos.column, "Unmatched opening parenthesis.", monaco.MarkerSeverity.Error)));
+        braceStack.forEach(pos => markers.push(makeMarker(pos.line, pos.column, "Unmatched opening brace.", monaco.MarkerSeverity.Error)));
+        bracketStack.forEach(pos => markers.push(makeMarker(pos.line, pos.column, "Unmatched opening bracket.", monaco.MarkerSeverity.Error)));
 
-        // Update the markers in the editor
-        monaco.editor.setModelMarkers(model, 'manualDiagnostics', markers);
+        monaco.editor.setModelMarkers(editorInstance.getModel(), 'manualDiagnostics', markers);
     }
 
-    function initManualDiagnostics() {
-        console.log("initManualDiagnostics called");
-        if (window.editor && window.editor.onDidChangeModelContent) {
-            console.log("Editor found:", window.editor);
-            window.editor.onDidChangeModelContent(() => {
-                updateManualDiagnostics();
-            });
-            // Run an initial check.
-            updateManualDiagnostics();
-        } else {
-            console.log("Editor not ready, retrying...");
-            setTimeout(initManualDiagnostics, 500);
+    /**
+     * Helper to create a marker object
+     */
+    function makeMarker(line, col, message, severity) {
+        return {
+            startLineNumber: line,
+            startColumn: col,
+            endLineNumber: line,
+            endColumn: col + 1,
+            message,
+            severity
+        };
+    }
+
+    /**
+     * Initialize manual diagnostics for multiple editors.
+     * @param {Object<string, monaco.editor.IStandaloneCodeEditor>} editorsMap
+     */
+    function initManualDiagnostics(editorsMap) {
+        if (!editorsMap || typeof editorsMap !== 'object') {
+            console.warn("initManualDiagnostics: invalid editorsMap provided");
+            return;
         }
+        console.log("initManualDiagnostics called with editors:", Object.keys(editorsMap));
+        Object.values(editorsMap).forEach(editorInstance => {
+            editorInstance.onDidChangeModelContent(() => updateManualDiagnostics(editorInstance));
+            updateManualDiagnostics(editorInstance);  // initial run
+        });
     }
 
+    // Expose globally
     window.initManualDiagnostics = initManualDiagnostics;
 })();

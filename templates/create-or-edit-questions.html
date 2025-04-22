@@ -32,6 +32,7 @@
             display: none;
             background-color: #222;
             color: #0f0;
+        !important;
             border: 1px solid #444;
             padding: 10px;
             margin-top: 15px;
@@ -187,23 +188,32 @@
 
 <!-- Monaco Editor -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.41.0/min/vs/loader.js"></script>
-<script>
+<script type="text/javascript">
     document.addEventListener('DOMContentLoaded', function () {
-        require.config({paths: {'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.41.0/min/vs'}});
+        require.config({
+            paths: {vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.41.0/min/vs'}
+        });
         require(['vs/editor/editor.main'], function () {
-            const userEditor = monaco.editor.create(document.getElementById('userStarterEditor'), {
-                value: document.getElementById('id_user_starter_code').value || '',
-                language: 'java',
-                theme: 'vs-dark',
-                automaticLayout: true
-            });
-            const instructorEditor = monaco.editor.create(document.getElementById('instructorEditor'), {
-                value: document.getElementById('id_instructor_code').value || '',
-                language: 'java',
-                theme: 'vs-dark',
-                automaticLayout: true
-            });
+            const userEditor = monaco.editor.create(
+                document.getElementById('userStarterEditor'),
+                {
+                    value: document.getElementById('id_user_starter_code').value || '',
+                    language: 'java',
+                    theme: 'vs-dark',
+                    automaticLayout: true
+                }
+            );
+            const instructorEditor = monaco.editor.create(
+                document.getElementById('instructorEditor'),
+                {
+                    value: document.getElementById('id_instructor_code').value || '',
+                    language: 'java',
+                    theme: 'vs-dark',
+                    automaticLayout: true
+                }
+            );
 
+            // keep form inputs in sync
             userEditor.onDidChangeModelContent(() => {
                 document.getElementById('id_user_starter_code').value = userEditor.getValue();
             });
@@ -211,123 +221,119 @@
                 document.getElementById('id_instructor_code').value = instructorEditor.getValue();
             });
 
-            // Run Code Button Click Handler
-            $("#run-code-button").click(function () {
-                const instructorCode = instructorEditor.getValue();
-                const questionId = $("#question_id").val();  // Get the question ID
-
-                if (!instructorCode.trim()) {
-                    alert("Instructor code is empty. Please enter code before running.");
+            // Run Code button
+            $('#run-code-button').on('click', function () {
+                const code = instructorEditor.getValue().trim();
+                const questionId = $('#question_id').val();
+                if (!code) {
+                    alert('Please enter some code before running.');
                     return;
                 }
 
-                $("#output-container").show().text("Running...");
-                $("#comparison-container").hide().empty();
-
+                showRunning();
                 $.ajax({
                     url: "{% url 'run-code' %}",
-                    type: "POST",
+                    type: 'POST',
                     data: {
-                        code: instructorCode,
-                        current_question_id_viewed_by_instructor: questionId,  // Send question ID
-                        instructor_test_flag: true,
-                        csrfmiddlewaretoken: "{{ csrf_token }}"
+                        code: code,
+                        question_id: questionId,
+                        csrfmiddlewaretoken: '{{ csrf_token }}'
                     },
-                    success: function (response) {
-                        if (response.error) {
-                            $("#output-container").text("Error: " + response.error).css("color", "red");
-                        } else {
-                            $("#output-container").text(response.results.map(r => r.actual_output).join("\n"));
-                            $("#comparison-container").show().html(
-                                response.results.map((r, i) => {
-                                    let diffHtml = highlightDifferences(r.expected_output, r.actual_output);
-                                    return `<h6>Test Case ${i + 1}:</h6>
-                                <strong>Input:</strong> ${r.input || "N/A"}<br>
-                                <strong>Expected:</strong> ${r.expected_output}<br>
-                                <strong>Actual:</strong> ${diffHtml}<br><hr>`;
-                                }).join("")
-                            );
-                        }
-                    }
+                    success: handleRunCodeSuccess,
+                    error: handleRunCodeError
                 });
             });
-        });
 
-    });
+            function showRunning() {
+                $('#output-container')
+                    .show()
+                    .text('Compiling…');
+                $('#comparison-container').hide().empty();
+            }
 
-    // Form Validation Before Submit
-    document.getElementById("question-form").addEventListener("submit", function (event) {
-        let isValid = true;
+            function handleRunCodeSuccess(data) {
+                if (data.error) {
+                    return $('#output-container')
+                        .show()
+                        .css('color', 'red')
+                        .text('Error: ' + data.error);
+                }
 
-        // Validate question_string
-        const questionString = document.querySelector("[name='question_string']");
-        const questionStringError = document.getElementById("question_string_error");
-        if (questionString.value.trim() === "") {
-            questionStringError.innerText = "This field cannot be empty.";
-            isValid = false;
-        } else {
-            questionStringError.innerText = "";
-        }
+                // build output list, guarding .trim():
+                const outputHtml = [
+                    '<h5>Program Output:</h5><ul>',
+                    ...data.results.map((r, i) => {
+                        const actual = (r.actual_output || '').trim();
+                        return `<li><strong>Test ${i + 1}:</strong> ${escapeHtml(actual)}</li>`;
+                    }),
+                    '</ul>'
+                ].join('');
 
-        // Validate question_type
-        const questionTypeInputs = document.querySelectorAll("input[name='question_type']");
-        const questionTypeError = document.getElementById("question_type_error");
-        let typeChecked = false;
-        questionTypeInputs.forEach(input => {
-            if (input.checked) {
-                typeChecked = true;
+                // build comparison, also guarding trim()
+                const comparisonHtml = [
+                    '<h5>Comparison Results:</h5>',
+                    ...data.results.map((r, i) => {
+                        const exp = (r.expected_output || '').trim();
+                        const act = (r.actual_output || '').trim();
+                        const inp = (r.input || '').trim();  // safe even if undefined
+                        const passed = r.passed;
+                        const diff = passed
+                            ? `<span class="correct">${escapeHtml(act)}</span>`
+                            : highlightDiff(exp, act);
+
+                        return `
+        <h6>Test Case ${i + 1}:</h6>
+        ${inp
+                            ? `<strong>Input:</strong> ${escapeHtml(inp)}<br>`
+                            : ''
+                        }
+        <strong>Expected:</strong> ${escapeHtml(exp)}<br>
+        <strong>Actual:</strong> ${diff}<br>
+        <strong>Result:</strong>
+          ${passed
+                            ? '<span class="correct">✔ Passed</span>'
+                            : '<span class="incorrect">✘ Failed</span>'}
+        <hr>
+      `;
+                    })
+                ].join('');
+
+                $('#output-container')
+                    .html(outputHtml).show();
+                $('#comparison-container').html(comparisonHtml).show();
+            }
+
+            function handleRunCodeError(xhr, status, error) {
+                $('#output-container')
+                    .show()
+                    .css('color', 'red')
+                    .text('An error occurred while running your code.');
+                console.error('Run‑code AJAX error:', status, error);
+            }
+
+            function highlightDiff(expected, actual) {
+                let out = '';
+                const length = Math.max(expected.length, actual.length);
+                for (let i = 0; i < length; i++) {
+                    const e = expected[i] || '';
+                    const a = actual[i] || '';
+                    const cls = (e === a) ? 'green' : 'red';
+                    out += `<span style="color:${cls};">${escapeHtml(a)}</span>`;
+                }
+                return out;
+            }
+
+            // simple HTML escape to avoid injection
+            function escapeHtml(s) {
+                return s
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;');
             }
         });
-        if (!typeChecked) {
-            questionTypeError.innerText = "Please select a question type.";
-            isValid = false;
-        } else {
-            questionTypeError.innerText = "";
-        }
-
-        // Validate user_starter_code
-        const userStarterCode = document.getElementById("id_user_starter_code").value.trim();
-        const userStarterCodeError = document.getElementById("user_starter_code_error");
-        if (userStarterCode === "") {
-            userStarterCodeError.innerText = "User starter code cannot be empty.";
-            isValid = false;
-        } else {
-            userStarterCodeError.innerText = "";
-        }
-
-        // Validate instructor_code
-        const instructorCode = document.getElementById("id_instructor_code").value.trim();
-        const instructorCodeError = document.getElementById("instructor_code_error");
-        if (instructorCode === "") {
-            instructorCodeError.innerText = "Instructor code cannot be empty.";
-            isValid = false;
-        } else {
-            instructorCodeError.innerText = "";
-        }
-
-        // If form is invalid, prevent submission
-        if (!isValid) {
-            event.preventDefault();
-        }
     });
-
-    function highlightDifferences(expected, actual) {
-        let output = "";
-        let minLength = Math.min(expected.length, actual.length);
-
-        for (let i = 0; i < minLength; i++) {
-            output += expected[i] === actual[i]
-                ? `<span class="correct">${actual[i]}</span>`
-                : `<span class="incorrect">${actual[i]}</span>`;
-        }
-
-        if (actual.length > expected.length) {
-            output += `<span class="incorrect">${actual.slice(expected.length)}</span>`;
-        }
-
-        return output;
-    }
 </script>
+
 
 </body>
 </html>

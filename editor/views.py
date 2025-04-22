@@ -2,117 +2,148 @@ import os
 import subprocess
 import tempfile
 from django.contrib.auth.decorators import login_required
-from django.contrib.auth import logout
+from django.contrib.auth import logout, login
+from django.contrib.auth.forms import UserCreationForm
+from django.contrib.auth.models import User
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse
+from django.urls import reverse
 from django.views.decorators.http import require_POST
 
 from editor.forms import QuestionsForm, TestCaseFormSet
-from editor.models import Questions
+from editor.models import Questions, ParticipantProfile, Submission
 
 
+@login_required
 def editor(request):
-    """Display the code editor with the current question and user starter code."""
-    questions = list(Questions.objects.all().order_by('id'))
-    if not questions:
-        return render(request, 'editor.html', {"error": "No questions available."})
+    # 1️⃣ Fetch the user’s profile & cohort
+    profile = request.user.participantprofile
+    is_experimental = (profile.group == ParticipantProfile.EXPERIMENTAL)
 
-    current_index = request.session.get("question_index", 0)
-    score = request.session.get("correct_count", 0)
+    # 2️⃣ Detect redo mode via ?redo=1 (only for Experimental cohort)
+    redo_mode = (is_experimental and request.GET.get('redo') == '1')
 
-    if current_index >= len(questions):
-        request.session["question_index"] = 0
-        current_index = 0
+    # 3️⃣ Build the question list
+    if redo_mode:
+        # Only those questions they got CORRECT on attempt 1 WITH AI
+        passed_qids = Submission.objects.filter(
+            user=request.user,
+            attempt_no=1,
+            used_ai=True,
+            is_correct=True
+        ).values_list('question_id', flat=True)
 
-    current_question = questions[current_index]
+        # Preserve your desired ordering
+        questions = list(
+            Questions.objects
+            .filter(id__in=passed_qids)
+            .order_by('id')
+        )
+    else:
+        # First pass: show the first 3 questions
+        questions = list(
+            Questions.objects
+            .all()
+            .order_by('id')[:3]
+        )
 
+    # 4️⃣ (Optional) Compute any scores you want to display
+    # For example: first‑attempt correct count
+    first_score = profile.first_attempt_correct
+    second_score = profile.second_attempt_correct
+
+    # 5️⃣ Render
     return render(request, 'editor.html', {
-        "question": current_question,
-        "question_number": current_index + 1,
-        "total_questions": len(questions),
-        "score": score,
-        "user_starter_code": current_question.user_starter_code,
+        'questions': questions,
+        'is_experimental': is_experimental,
+        'redo_mode': redo_mode,
+        'first_score': first_score,
+        'second_score': second_score,
     })
 
 
 @require_POST
 def run_code(request):
     """
-    Compiles and executes Java code based on the question type (I/O or unit test).
-    Returns JSON with execution results.
+    Compiles and executes Java code for a given question (I/O or unit test).
+    Expects POST params:
+      - code: the user’s Main.java source
+      - question_id: the ID of the Questions object to run against
+    Returns JSON: { results: [ { input, expected_output, actual_output, passed }, … ] }
     """
-    code = request.POST.get("code")
+    code = request.POST.get("code", "").strip()
+    qid = request.POST.get("question_id")
+
+    # Basic validation
     if not code:
         return JsonResponse({"error": "No code provided."}, status=400)
+    if not qid:
+        return JsonResponse({"error": "No question_id provided."}, status=400)
 
-    # Determine current question
-    questions = list(Questions.objects.all().order_by("id"))
-    if not questions:
-        return JsonResponse({"error": "No questions available."}, status=400)
+    # Lookup question
+    try:
+        question = Questions.objects.get(pk=int(qid))
+    except (Questions.DoesNotExist, ValueError):
+        return JsonResponse({"error": "Invalid question_id."}, status=400)
 
-    current_index = request.session.get("question_index", 0)
-    if current_index >= len(questions):
-        request.session["question_index"] = 0
-        current_index = 0
-
-    current_question = questions[current_index]
-
-    if request.POST.get("instructor_test_flag") is not None and True:
-        question_id = request.POST.get("current_question_id_viewed_by_instructor")
-        current_question = Questions.objects.get(id=question_id)
-
-    test_cases = current_question.test_cases.all()
+    test_cases = question.test_cases.all()
     results = []
 
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Compile user's Java code
-            compile_process = compile_java_file(code, "Main.java", temp_dir)
-            if compile_process.returncode != 0:
-                return JsonResponse({"error": compile_process.stderr})
+            # 1) Compile Main.java
+            cp = compile_java_file(code, "Main.java", temp_dir)
+            if cp.returncode != 0:
+                return JsonResponse({"error": cp.stderr}, status=200)
 
-            # I/O Based Question Execution
-            if current_question.question_type == "IO":
-                for test in test_cases:
-                    output = execute_java_file("Main", temp_dir, input_data=test.test_input)
+            # 2) Branch on question type
+            if question.question_type == "IO":
+                # For each test case, run Main with test_input
+                for tc in test_cases:
+                    out = execute_java_file("Main", temp_dir, input_data=tc.test_input)
+                    expected = tc.expected_output.strip()
+                    actual = out.strip()
                     results.append({
-                        "input": test.test_input,
-                        "expected_output": test.expected_output.strip(),
-                        "actual_output": output,
-                        "passed": output == test.expected_output.strip()
+                        "input": tc.test_input,
+                        "expected_output": expected,
+                        "actual_output": actual,
+                        "passed": actual == expected
                     })
+
             else:
-                # Unit Test Execution Using Predefined Test Runner
-                test_runner_path = "/Users/jaden/PycharmProjects/CodeEditor/java/CountPositiveRunner.java"
-                copied_test_runner_path = os.path.join(temp_dir, "CountPositiveRunner.java")
-                subprocess.run(["cp", test_runner_path, copied_test_runner_path])
+                # Unit test via your existing CountPositiveRunner.java
+                runner_src = "/Users/jaden/PycharmProjects/CodeEditor/java/CountPositiveRunner.java"
+                dest = os.path.join(temp_dir, "CountPositiveRunner.java")
+                subprocess.run(["cp", runner_src, dest], check=True)
 
-                compile_runner = subprocess.run(
-                    ["javac", copied_test_runner_path],
-                    capture_output=True,
-                    text=True
+                # Compile the runner
+                cr = subprocess.run(
+                    ["javac", dest], capture_output=True, text=True
                 )
-                if compile_runner.returncode != 0:
-                    return JsonResponse({"error": compile_runner.stderr})
+                if cr.returncode != 0:
+                    return JsonResponse({"error": cr.stderr}, status=200)
 
-                # Run the test runner
-                output = execute_java_file("CountPositiveRunner", temp_dir)
+                # Run the runner
+                out = execute_java_file("CountPositiveRunner", temp_dir)
 
-                # Extract "Actual" value from output
-                actual_value = None
-                for line in output.splitlines():
+                # Parse lines for “Actual:” prefix
+                actual_val = None
+                for line in out.splitlines():
                     if line.startswith("Actual:"):
-                        actual_value = line.replace("Actual:", "").strip()
+                        actual_val = line.split("Actual:")[1].strip()
+                        break
 
-                expected_value = "6"
-                passed = actual_value == expected_value if actual_value else False
+                expected_val = "6"
+                passed = (actual_val == expected_val)
                 results.append({
-                    "expected_output": expected_value,
-                    "actual_output": actual_value if actual_value else output,
+                    "input": None,
+                    "expected_output": expected_val,
+                    "actual_output": actual_val or out,
                     "passed": passed
                 })
+
     except Exception as e:
-        return JsonResponse({"error": str(e)})
+        return JsonResponse({"error": str(e)}, status=500)
 
     return JsonResponse({"results": results})
 
@@ -165,61 +196,90 @@ def logout_view(request):
 
 def submit_code(request):
     """
-    Submits user code, evaluates correctness, updates score, and moves to the next question.
+    Handle the user clicking "Submit":
+    - Compile & run their Main.java for the given question.
+    - Record a Submission (which question, attempt_no, used_ai, is_correct).
+    - Update the profile's counters.
+    - Redirect to either:
+        • /editor/?redo=1  (experimental, first attempt)
+        • /editor/         (all other cases)
     """
-    if request.method != "POST":
+    # 1) Pull form data
+    code = request.POST.get("code", "").strip()
+    qid = request.POST.get("question_id")
+    attempt_no = int(request.POST.get("attempt_no", "1"))
+
+    if not code or not qid:
         return redirect("editor")
 
-    code = request.POST.get("code")
-    if not code:
-        return redirect("editor")
+    # 2) Lookup objects
+    question = get_object_or_404(Questions, pk=int(qid))
+    profile = request.user.participantprofile
 
-    # Retrieve all questions (ordered by ID) and get the current question index.
-    questions = list(Questions.objects.all().order_by('id'))
-    total_questions = len(questions)
-    current_index = request.session.get("question_index", 0)
-    print(current_index)
+    # Determine if AI was visible:
 
-    if total_questions == 0:
-        return redirect("editor")
+    used_ai = (profile.group == ParticipantProfile.EXPERIMENTAL and attempt_no == 1)
 
-    current_question = questions[current_index]
-    correct = False
-
+    # 3) Compile & test
+    is_correct = False
     try:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            compile_process = compile_java_file(code, "Main.java", temp_dir)
-            if compile_process.returncode == 0:
-                if current_question.question_type == "IO":
-                    correct = all(
-                        execute_java_file("Main", temp_dir, input_data=test.test_input).strip()
-                        == test.expected_output.strip()
-                        for test in current_question.test_cases.all()
+        with tempfile.TemporaryDirectory() as tmp:
+            # compile Main.java
+            cpp = compile_java_file(code, "Main.java", tmp)
+            if cpp.returncode == 0:
+                if question.question_type == "IO":
+                    # pass every I/O test
+                    is_correct = all(
+                        execute_java_file("Main", tmp, input_data=tc.test_input).strip()
+                        == tc.expected_output.strip()
+                        for tc in question.test_cases.all()
                     )
                 else:
-                    output = execute_java_file("CountPositiveRunner", temp_dir)
-                    correct = "Actual: 6" in output
-    except Exception as e:
-        print("Error processing code:", e)
+                    # unit test via existing CountPositiveRunner
+                    runner_src = "/Users/jaden/PycharmProjects/CodeEditor/java/CountPositiveRunner.java"
+                    dest = os.path.join(tmp, "CountPositiveRunner.java")
+                    subprocess.run(["cp", runner_src, dest], check=True)
 
-    # Debugging output
-    print(f"Before updating session: question_index={current_index}, correct={correct}")
+                    cr = subprocess.run(["javac", dest], capture_output=True, text=True)
+                    if cr.returncode == 0:
+                        output = execute_java_file("CountPositiveRunner", tmp).splitlines()
+                        actual = None
+                        for line in output:
+                            if line.startswith("Actual:"):
+                                actual = line.split("Actual:")[1].strip()
+                                break
+                        is_correct = (actual == "6")
+    except Exception:
+        is_correct = False
 
-    if correct:
-        request.session["correct_count"] = request.session.get("correct_count", 0) + 1
+    # 4) Record the submission
+    Submission.objects.create(
+        user=request.user,
+        question=question,
+        attempt_no=attempt_no,
+        used_ai=used_ai,
+        is_correct=is_correct
+    )
 
-    # Move to the next question
-    new_index = current_index + 1
-    print(new_index)
-    if new_index >= total_questions:
-        request.session["question_index"] = 0  # Reset to first question
+    # 5) Update the participant’s counters
+    if attempt_no == 1:
+        if is_correct:
+            profile.first_attempt_correct += 1
+        else:
+            profile.first_attempt_incorrect += 1
+    elif attempt_no == 2 and profile.group == ParticipantProfile.EXPERIMENTAL:
+        if is_correct:
+            profile.second_attempt_correct += 1
+
+    profile.save()
+
+    # 6) Redirect appropriately
+    if profile.group == ParticipantProfile.EXPERIMENTAL and attempt_no == 1:
+        # send them into "redo" mode
+        return redirect(f"{reverse('editor')}?redo=1")
     else:
-        request.session["question_index"] = new_index
-
-    print(f"After updating session: question_index={request.session['question_index']}")
-
-    return redirect("editor")
-
+        # normal flow: next question (session logic inside editor() handles wrapping)
+        return redirect("editor")
 
 
 def compile_java_file(code, filename, temp_dir):
@@ -251,3 +311,35 @@ def execute_java_file(class_name, temp_dir, input_data=None):
         return run_process.stdout.strip() or run_process.stderr.strip()
     except Exception as e:
         return str(e)
+
+
+def register(request):
+    if request.method == 'POST':
+        pwd1 = request.POST.get('password1')
+        pwd2 = request.POST.get('password2')
+
+        # Simple password confirmation check
+        if not pwd1 or pwd1 != pwd2:
+            return render(request, 'registration/login.html', {
+                'register_error': 'Passwords must match and not be empty.'
+            })
+
+        # 1) Create a user with a temporary username
+        user = User.objects.create_user(username='temp', password=pwd1)
+        # 2) Grab its auto-incremented primary key
+        new_username = str(user.id)
+        # 3) Overwrite the username field
+        user.username = new_username
+        # 4) Save again
+        user.save()
+
+        # Optionally, log them in immediately
+        # login(request, user)
+
+        # 5) Render the same page, passing generated_username into context
+        return render(request, 'registration/login.html', {
+            'generated_username': new_username
+        })
+
+    # GET
+    return render(request, 'registration/login.html')

@@ -1,4 +1,6 @@
 from django import forms
+from django.contrib.auth.forms import UserCreationForm
+from django.contrib.auth.models import User
 from django.forms.models import inlineformset_factory, BaseInlineFormSet
 from .models import Questions, TestCase, QUESTION_TYPE_CHOICES
 
@@ -55,3 +57,17 @@ TestCaseFormSet = inlineformset_factory(
     extra=1,
     can_delete=True
 )
+
+
+class CustomUserCreationForm(UserCreationForm):
+    class Meta:
+        model = User
+        fields = []  # omit username if you'd like to auto-generate it
+
+    def save(self, commit=True):
+        # Generate a username; for example, using a random number or similar logic.
+        user = super().save(commit=False)
+        user.username = f"user_{User.objects.count() + 1}"  # simplistic example
+        if commit:
+            user.save()
+        return user
