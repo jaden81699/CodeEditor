@@ -1,13 +1,13 @@
 from django.contrib import admin
 from django.urls import path
 from . import views
+from .views import ExperimentalLoginView
+
+app_name = "experimental_app"
 
 urlpatterns = [
-    path('editor/', views.editor, name='editor'),
-    path('questions/', views.create_or_edit_questions, name='create-or-edit-questions'),
-    path('questions/<int:question_id>/', views.create_or_edit_questions, name='create-or-edit-questions'),
-    path('questions/delete/<int:question_id>/', views.delete_question, name='delete-question'),
-    path('submit-code/', views.submit_code, name='submit-code'),
-    path('run-code/', views.run_code, name='run-code'),
+    path("login/", ExperimentalLoginView.as_view(), name="login"),
+    path('logout/', views.logout_view, name='logout'),
+    path('register/', views.register, name='register'),
 
 ]

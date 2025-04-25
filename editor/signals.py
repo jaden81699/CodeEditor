@@ -16,8 +16,8 @@ def ensure_profile(sender, instance, **kwargs):
 def create_participant_profile(sender, instance, created, **kwargs):
     if created:
         # assign C or E at random (or your own logic)
-        group = random.choice([
-            # ParticipantProfile.CONTROL,
-            ParticipantProfile.EXPERIMENTAL
-        ])
-        ParticipantProfile.objects.create(user=instance, group=group)
+        # group = random.choice([
+        #     # ParticipantProfile.CONTROL,
+        #     # ParticipantProfile.EXPERIMENTAL
+        # ])
+        ParticipantProfile.objects.create(user=instance)

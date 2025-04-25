@@ -1,14 +1,16 @@
 import os
 import subprocess
 import tempfile
-from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required, user_passes_test
 from django.contrib.auth import logout, login
-from django.contrib.auth.forms import UserCreationForm
+from django.contrib.auth.forms import UserCreationForm, AuthenticationForm
 from django.contrib.auth.models import User
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse
-from django.urls import reverse
+from django.urls import reverse, reverse_lazy
 from django.views.decorators.http import require_POST
+from django.utils.functional import cached_property
+from django.contrib.auth.views import LoginView
 
 from editor.forms import QuestionsForm, TestCaseFormSet
 from editor.models import Questions, ParticipantProfile, Submission
@@ -148,7 +150,7 @@ def run_code(request):
     return JsonResponse({"results": results})
 
 
-@login_required
+@user_passes_test(lambda u: u.is_superuser)
 def create_or_edit_questions(request, question_id=None):
     """Create or edit a coding question along with its test cases."""
     question = get_object_or_404(Questions, pk=question_id) if question_id else None
@@ -178,7 +180,7 @@ def create_or_edit_questions(request, question_id=None):
     })
 
 
-@login_required
+@user_passes_test(lambda u: u.is_superuser)
 def delete_question(request, question_id):
     """Delete a coding question."""
     question = get_object_or_404(Questions, pk=question_id)
@@ -191,7 +193,7 @@ def delete_question(request, question_id):
 def logout_view(request):
     """Logout user and redirect to login page."""
     logout(request)
-    return redirect('login')
+    return redirect('experimental_app:login')
 
 
 def submit_code(request):
@@ -314,32 +316,41 @@ def execute_java_file(class_name, temp_dir, input_data=None):
 
 
 def register(request):
+    template = 'experimental_app/login_register_e.html'
+    login_form = AuthenticationForm()
+    context = {'form': login_form}
+
     if request.method == 'POST':
-        pwd1 = request.POST.get('password1')
-        pwd2 = request.POST.get('password2')
+        pwd1 = request.POST.get('password1', '')
+        pwd2 = request.POST.get('password2', '')
 
-        # Simple password confirmation check
         if not pwd1 or pwd1 != pwd2:
-            return render(request, 'registration/login.html', {
-                'register_error': 'Passwords must match and not be empty.'
-            })
+            context['register_error'] = 'Passwords must match and not be empty.'
+            return render(request, template, context)
 
-        # 1) Create a user with a temporary username
+        # create user with temp username
         user = User.objects.create_user(username='temp', password=pwd1)
-        # 2) Grab its auto-incremented primary key
-        new_username = str(user.id)
-        # 3) Overwrite the username field
-        user.username = new_username
-        # 4) Save again
+        user.username = str(user.id)
         user.save()
 
-        # Optionally, log them in immediately
-        # login(request, user)
+        # Assign them to experimental group (update existing or create new)
+        profile, created = ParticipantProfile.objects.get_or_create(user=user)
+        profile.group = 'E'
+        profile.save()
 
-        # 5) Render the same page, passing generated_username into context
-        return render(request, 'registration/login.html', {
-            'generated_username': new_username
-        })
+        # now tell the template to switch to the login tab
+        context['generated_username'] = user.username
+        return render(request, template, context)
 
-    # GET
-    return render(request, 'registration/login.html')
+    # GET just shows login+register tabs
+    return render(request, template, context)
+
+
+class ExperimentalLoginView(LoginView):
+    template_name = "experimental_app/login_register_e.html"
+    redirect_authenticated_user = True
+    # once you’re logged in, go straight to your editor
+    success_url = reverse_lazy("editor")
+
+    def get_success_url(self):
+        return self.success_url

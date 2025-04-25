@@ -18,12 +18,18 @@ from django.contrib import admin
 from django.urls import path, include
 from django.contrib.auth import views as auth_views
 
+from control_app.views import run_code
 from editor import views
+from editor.views import create_or_edit_questions, delete_question, submit_code
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('login/', auth_views.LoginView.as_view(), name='login'),
-    path('register/', views.register, name='register'),
-    path('logout/', views.logout_view, name='logout'),
-    path('', include('editor.urls')),
+    path('e/', include('editor.urls'), ),
+    path('c/', include('control_app.urls'), ),
+    path('run-code/', run_code, name='run-code'),
+    path('editor/', views.editor, name='editor'),
+    path('questions/', create_or_edit_questions, name='create-or-edit-questions'),
+    path('questions/<int:question_id>/', create_or_edit_questions, name='create-or-edit-questions'),
+    path('questions/delete/<int:question_id>/', delete_question, name='delete-question'),
+    path('submit-code/', submit_code, name='submit-code'),
 ]

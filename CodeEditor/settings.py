@@ -36,6 +36,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'editor.apps.EditorConfig',
+    "widget_tweaks",
     'channels',
 ]
 
