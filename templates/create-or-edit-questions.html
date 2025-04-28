@@ -232,7 +232,7 @@
 
                 showRunning();
                 $.ajax({
-                    url: "{% url 'run-code' %}",
+                    url: "{% url 'experimental_app:run-code' %}",
                     type: 'POST',
                     data: {
                         code: code,

@@ -87,11 +87,17 @@
                             data-bs-target="#pills-compiler" type="button" role="tab">Compiler
                     </button>
                 </li>
-                <li class="nav-item">
-                    <button class="nav-link" id="pills-ai-tool-tab" data-bs-toggle="pill"
-                            data-bs-target="#pills-ai-tool" type="button" role="tab">AI Tool
-                    </button>
-                </li>
+
+                {% if show_ai %}
+                    <li class="nav-item">
+                        <button class="nav-link"
+                                id="pills-ai-tool-tab"
+                                data-bs-toggle="pill"
+                                data-bs-target="#pills-ai-tool"
+                                type="button">AI Tool
+                        </button>
+                    </li>
+                {% endif %}
             </ul>
 
             <div class="d-flex align-items-center">
@@ -132,72 +138,90 @@
                         <div class="tab-pane fade show active" id="pills-compiler" role="tabpanel"
                              aria-labelledby="pills-compiler-tab">
                             <div class="container py-2">
+                                <div style="display:none">
+                                    {% csrf_token %}
+                                </div>
                                 {% for question in questions %}
-                                    <div class="card mb-4 shadow-sm">
-                                        <div class="card-header bg-secondary text-white">
-                                            Question {{ forloop.counter }}
-                                        </div>
-                                        <div class="card-body">
-
-                                            <!-- Prompt -->
-                                            <p>{{ question.question_string }}</p>
-
-                                            <!-- Monaco Editor placeholder -->
-                                            <div id="editor-{{ question.id }}"
-                                                 class="monaco-editor-container mb-3"
-                                                 data-question-id="{{ question.id }}"
-                                                 data-starter-code="{{ question.user_starter_code }}"
-                                                 style="height:200px;">
-                                            </div>
-
-                                            <!-- Run Code button -->
-                                            <button class="btn btn-success run-code-btn mb-3"
-                                                    data-question-id="{{ question.id }}">
-                                                Run Code
-                                            </button>
-
-                                            <!-- Output -->
-                                            <div id="output-{{ question.id }}"
-                                                 class="border rounded p-2 mb-2 bg-light text-dark"
-                                                 style="min-height:80px; overflow-y:auto;">
-                                                Output will appear here…
-                                            </div>
-
-                                            <!-- Comparison -->
-                                            <div id="comparison-{{ question.id }}"
-                                                 class="border rounded p-2 bg-light text-dark"
-                                                 style="min-height:80px; overflow-y:auto;">
-                                                Comparison will appear here…
-                                            </div>
-
-                                        </div>
-                                    </div>
-
-                                    <form class="question-submit-form" action="{% url 'submit-code' %}" method="POST"
-                                          style="display: none;">
+                                    <form
+                                            class="question-submit-form"
+                                            method="POST"
+                                            action="{% url 'control_app:submit-all' %}"
+                                    >
                                         {% csrf_token %}
+
+                                        <!-- 1) QUESTION ID -->
                                         <input type="hidden" name="question_id" value="{{ question.id }}">
-                                        <input type="hidden" name="attempt_no"
-                                               value="{% if redo_mode %}2{% else %}1{% endif %}">
-                                        <input type="hidden" name="code" class="code-input">
+
+                                        <!-- 3) THE CODE (filled by JS) -->
+                                        <input type="hidden" name="code" class="code-input" value="">
+
+                                        <!-- keep only this one -->
+                                        <input
+                                                type="hidden"
+                                                name="attempt_no"
+                                                value="{% if is_control and control_pass == 2 %}2
+         {% else %}1{% endif %}"
+                                        />
+
+
+                                        <div class="card mb-4 shadow-sm">
+                                            <div class="card-header bg-secondary text-white">
+                                                Question {{ forloop.counter }}
+                                            </div>
+                                            <div class="card-body">
+
+                                                <!-- Prompt -->
+                                                <p>{{ question.question_string }}</p>
+
+                                                <!-- Monaco Editor placeholder -->
+                                                <div id="editor-{{ question.id }}"
+                                                     class="monaco-editor-container mb-3"
+                                                     data-question-id="{{ question.id }}"
+                                                     data-starter-code="{{ question.user_starter_code }}"
+                                                     style="height:200px;">
+                                                </div>
+
+                                                <!-- Run Code button -->
+                                                <button
+                                                        type="button"
+                                                        class="btn btn-success run-code-btn mb-3"
+                                                        data-question-id="{{ question.id }}"
+                                                        data-attempt-no="{{ attempt_no }}"
+                                                >
+                                                    Run Code
+                                                </button>
+
+                                                <!-- Output -->
+                                                <div id="output-{{ question.id }}"
+                                                     class="border rounded p-2 mb-2 bg-light text-dark"
+                                                     style="min-height:80px; overflow-y:auto;">
+                                                    Output will appear here…
+                                                </div>
+
+                                                <!-- Comparison -->
+                                                <div id="comparison-{{ question.id }}"
+                                                     class="border rounded p-2 bg-light text-dark"
+                                                     style="min-height:80px; overflow-y:auto;">
+                                                    Comparison will appear here…
+                                                </div>
+
+                                            </div>
+                                        </div>
                                     </form>
                                 {% endfor %}
                             </div>
+
                         </div>
 
-                        {% if is_experimental and not redo_mode %}
-                            <!-- ================= AI Tool Tab ================= -->
-                            <div class="tab-pane fade" id="pills-ai-tool" role="tabpanel"
-                                 aria-labelledby="pills-ai-tool-tab">
+                        {% if show_ai %}
+                            <div class="tab-pane fade" id="pills-ai-tool">
                                 <div class="card">
                                     <div class="card-header bg-primary text-white">AI Chatbot</div>
-                                    <div class="card-body" id="chat-body">
-                                        <!-- Chat messages will be appended here -->
-                                    </div>
+                                    <div class="card-body" id="chat-body"></div>
                                     <div class="card-footer">
                                         <div class="input-group">
                                             <input type="text" id="user-input" class="form-control"
-                                                   placeholder="Type a message...">
+                                                   placeholder="Type a message…">
                                             <button class="btn btn-primary" onclick="sendMessage()">Send</button>
                                         </div>
                                     </div>
@@ -244,60 +268,66 @@
 
 
 <!-- Run Code Button functionality (AJAX for testing code) -->
-<script type="text/javascript">
-    // --- Helpers ---
-    function clearPreviousOutput(compilerOutput, comparisonContainer) {
-        compilerOutput.innerHTML = "";
-        comparisonContainer.innerHTML = "";
-    }
-
-    function displayError(container, message) {
-        container.innerHTML = `<pre class="compiler-error">${message}</pre>`;
-    }
-
-    function displayTypingIndicator(container) {
-        let dots = "";
-        return setInterval(() => {
-            dots = dots.length < 3 ? dots + "." : "";
-            container.innerText = "Compiling" + dots;
-        }, 500);
-    }
-
-    async function sendCodeToServer(code, questionId) {
-        const url = "{% url 'run-code' %}"
-        const response = await fetch(url, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
-                "X-CSRFToken": document.querySelector('[name=csrfmiddlewaretoken]').value
-            },
-            body: new URLSearchParams({code, question_id: questionId})
-        });
-        return response.json();
-    }
-
-    function processServerResponse(data, compilerOutput, comparisonContainer) {
-        if (data.error) {
-            displayError(compilerOutput, data.error);
-            return;
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        // --- Helpers ---
+        function clearPreviousOutput(compilerOutput, comparisonContainer) {
+            compilerOutput.innerHTML = "";
+            comparisonContainer.innerHTML = "";
         }
 
-        let outputHtml = "<h5>Program Output:</h5><ul>";
-        let comparisonHtml = "<h5>Comparison Results:</h5>";
+        function displayError(container, message) {
+            container.innerHTML = `<pre class="compiler-error">${message}</pre>`;
+        }
 
-        data.results.forEach((result, idx) => {
-            outputHtml += `<li><strong>Test ${idx + 1}:</strong> ${result.actual_output.trim()}</li>`;
+        function displayTypingIndicator(container) {
+            let dots = "";
+            return setInterval(() => {
+                dots = dots.length < 3 ? dots + "." : "";
+                container.innerText = "Compiling" + dots;
+            }, 500);
+        }
 
-            const diffHtml = highlightDifferences(
-                result.expected_output.trim(),
-                result.actual_output.trim()
-            );
+        async function sendCodeToServer(code, questionId, attemptNo) {
+            const url = "{% url 'control_app:run-code' %}";
+            const response = await fetch(url, {
+                credentials: 'same-origin',
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "X-CSRFToken": document.querySelector('[name=csrfmiddlewaretoken]').value
+                },
+                body: new URLSearchParams({
+                    code,
+                    question_id: questionId,
+                    attempt_no: attemptNo
+                })
+            });
+            return response;
+        }
 
-            const passed = result.expected_output.trim() === result.actual_output.trim()
-                ? `<span style="color: green;">✔ Passed</span>`
-                : `<span style="color: red;">❌ Failed</span>`;
+        function processServerResponse(data, compilerOutput, comparisonContainer) {
+            if (data.error) {
+                displayError(compilerOutput, data.error);
+                return;
+            }
 
-            comparisonHtml += `
+            let outputHtml = "<h5>Program Output:</h5><ul>";
+            let comparisonHtml = "<h5>Comparison Results:</h5>";
+
+            data.results.forEach((result, idx) => {
+                outputHtml += `<li><strong>Test ${idx + 1}:</strong> ${result.actual_output.trim()}</li>`;
+
+                const diffHtml = highlightDifferences(
+                    result.expected_output.trim(),
+                    result.actual_output.trim()
+                );
+
+                const passed = result.expected_output.trim() === result.actual_output.trim()
+                    ? `<span style="color: green;">✔ Passed</span>`
+                    : `<span style="color: red;">❌ Failed</span>`;
+
+                comparisonHtml += `
         <div>
           <h6>Test Case ${idx + 1}</h6>
           <strong>Input:</strong> ${result.input ? result.input.trim() : "N/A"}<br>
@@ -306,85 +336,104 @@
           <strong>Result:</strong> ${passed}
         </div>
         <hr>`;
+            });
+
+            outputHtml += "</ul>";
+            compilerOutput.innerHTML = outputHtml;
+            comparisonContainer.innerHTML = comparisonHtml;
+        }
+
+        function highlightDifferences(expected, actual) {
+            let highlighted = "";
+            for (let i = 0; i < Math.max(expected.length, actual.length); i++) {
+                highlighted += expected[i] === actual[i]
+                    ? `<span style="color:green;">${actual[i] || ""}</span>`
+                    : `<span style="color:red;">${actual[i] || ""}</span>`;
+            }
+            return highlighted;
+        }
+
+
+        // --- Run Code buttons ---
+        document.querySelectorAll(".run-code-btn").forEach(btn => {
+            btn.addEventListener("click", async () => {
+                const qid = btn.dataset.questionId;
+                const attemptNo = btn.dataset.attemptNo;
+                const editor = window.editors[qid];
+                const code = editor.getValue();
+                const out = document.getElementById(`output-${qid}`);
+                const cmp = document.getElementById(`comparison-${qid}`);
+
+                clearPreviousOutput(out, cmp);
+
+                if (!code.includes("class Main")) {
+                    displayError(out, "Error: code must define a class named 'Main'.");
+                    return;
+                }
+
+                const typingInterval = displayTypingIndicator(out);
+
+                try {
+                    const resp = await sendCodeToServer(code, qid, attemptNo);
+                    const data = await resp.json();
+                    clearInterval(typingInterval);
+                    processServerResponse(data, out, cmp);
+                } catch (err) {
+                    clearInterval(typingInterval);
+                    console.error(err);
+                    displayError(out, "An error occurred while running your code.");
+                }
+            });
         });
 
-        outputHtml += "</ul>";
-        compilerOutput.innerHTML = outputHtml;
-        comparisonContainer.innerHTML = comparisonHtml;
-    }
 
-    function highlightDifferences(expected, actual) {
-        let highlighted = "";
-        for (let i = 0; i < Math.max(expected.length, actual.length); i++) {
-            highlighted += expected[i] === actual[i]
-                ? `<span style="color:green;">${actual[i] || ""}</span>`
-                : `<span style="color:red;">${actual[i] || ""}</span>`;
+        // --- Submit All button ---
+        const submitAllBtn = document.getElementById("submit-all");
+        if (!submitAllBtn) {
+            console.error("❌ #submit-all button not found!");
+            return;
         }
-        return highlighted;
-    }
 
+        document.getElementById("submit-all").addEventListener("click", async () => {
+            const btn = document.getElementById("submit-all");
+            const forms = document.querySelectorAll(".question-submit-form");
 
-    // --- Attach to each Run button ---
-    document.querySelectorAll(".run-code-btn").forEach(btn => {
-        btn.addEventListener("click", async () => {
-            const qid = btn.dataset.questionId;
-            const editorInstance = window.editors[qid];
-            const code = editorInstance.getValue();
-            const out = document.getElementById(`output-${qid}`);
-            const cmp = document.getElementById(`comparison-${qid}`);
+            btn.disabled = true;
+            btn.textContent = "Submitting…";
 
-            clearPreviousOutput(out, cmp);
+            // gather all question_id + code pairs
+            const data = new URLSearchParams();
+            forms.forEach(form => {
+                const qid = form.querySelector("input[name='question_id']").value;
+                const code = window.editors[qid].getValue();
+                data.append("question_id", qid);
+                data.append("code", code);
+            });
+            // CSRF
+            data.append("csrfmiddlewaretoken",
+                document.querySelector("[name=csrfmiddlewaretoken]").value);
 
-            if (!code.includes("class Main")) {
-                displayError(out, "Error: code must define a class named 'Main'.");
+            // hit the new submit‐all endpoint
+            const resp = await fetch("{% url 'control_app:submit-all' %}", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: {"Content-Type": "application/x-www-form-urlencoded"},
+                body: data
+            });
+            const json = await resp.json();
+
+            console.log("submit-all response:", json);
+            // If the view told us where to go next, just do that
+            if (json.redirect_url) {
+                window.location.href = json.redirect_url;
                 return;
             }
 
-            const typingInterval = displayTypingIndicator(out);
+            // (optional) fallback:
+            window.location.href = "{% url 'control_app:editor' %}";
 
-            try {
-                const data = await sendCodeToServer(code, qid);
-                clearInterval(typingInterval);
-                processServerResponse(data, out, cmp);
-            } catch (err) {
-                clearInterval(typingInterval);
-                console.error(err);
-                displayError(out, "An error occurred while running your code.");
-            }
         });
-    });
 
-
-    document.getElementById("submit-all").addEventListener("click", async () => {
-        const forms = document.querySelectorAll(".question-submit-form");
-        const btn = document.getElementById("submit-all");
-        btn.disabled = true;
-        btn.textContent = "Submitting…";
-
-        for (let form of forms) {
-            const qid = form.querySelector("input[name='question_id']").value;
-            const editor = window.editors[qid];
-            form.querySelector(".code-input").value = editor.getValue();
-
-            const params = new URLSearchParams(new FormData(form));
-            await fetch(form.action, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "X-CSRFToken": params.get("csrfmiddlewaretoken"),
-                },
-                body: params
-            });
-        }
-
-        // after all 3 posts, redirect
-        const redo = "{% if is_experimental and not redo_mode %}true{% else %}false{% endif %}";
-
-        if (redo === "true") {
-            window.location = "{% url 'editor' %}?redo=1";
-        } else {
-            window.location = "{% url 'editor' %}";
-        }
     });
 </script>
 

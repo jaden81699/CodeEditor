@@ -1,0 +1,558 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI-Assisted Programming</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
+          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+    <!-- Prism CSS for code highlighting (optional) -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet"/>
+    <style>
+        /* Set full viewport height */
+        html, body {
+            height: 100vh;
+            margin: 0;
+        }
+
+        /* Main content takes up 75% of viewport height */
+        .main-content {
+            height: 75vh;
+        }
+
+        /* General Styles */
+        body {
+            background-color: #121212;
+            color: #e0e0e0;
+        }
+
+        /* Editor container styling */
+        #editor-container {
+            height: 100%;
+            width: 100%;
+            background-color: #1e1e1e;
+            overflow: hidden;
+        }
+
+        .monaco-editor {
+            width: 100% !important;
+            height: 100% !important;
+            box-sizing: border-box;
+            margin: 0;
+        }
+
+        #chat-body {
+            height: 300px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        ul {
+            margin: 0.5em 1em;
+            padding-left: 1.5em;
+            list-style-type: disc;
+        }
+
+        /* Custom styling for compiler errors */
+        .compiler-error {
+            color: red;
+            font-family: Consolas, Monaco, monospace;
+            white-space: pre-wrap;
+            background-color: #2b2b2b;
+            padding: 10px;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+<!-- Navigation Bar -->
+<nav class="navbar navbar-expand-md navbar-dark bg-dark">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="#">AI-Assisted Programming</a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarContent">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarContent">
+            <div class="me-auto">
+                <button class="btn btn-outline-secondary" id="select-language-button">
+                    Current Language: Java
+                </button>
+            </div>
+            <!-- Pills for Compiler and AI Tool -->
+            <ul class="nav nav-pills me-auto">
+                <li class="nav-item">
+                    <button class="nav-link active" id="pills-compiler-tab" data-bs-toggle="pill"
+                            data-bs-target="#pills-compiler" type="button" role="tab">Compiler
+                    </button>
+                </li>
+
+                {% if show_ai %}
+                    <li class="nav-item">
+                        <button class="nav-link" id="pills-ai-tool-tab"
+                                data-bs-toggle="pill" data-bs-target="#pills-ai-tool"
+                                type="button">AI Tool
+                        </button>
+                    </li>
+                {% endif %}
+            </ul>
+
+            <div class="d-flex align-items-center">
+                {# in editor.html, where you render your logout button #}
+                {% if request.user.participantprofile.group == 'C' %}
+                    <a href="{% url 'control_app:logout' %}" class="btn btn-danger btn-sm mx-2">Logout</a>
+                {% else %}
+                    <a href="{% url 'experimental_app:logout' %}" class="btn btn-danger btn-sm mx-2">Logout</a>
+                {% endif %}
+                <!-- Submit Code Button: normal submission that reloads the page -->
+                <button
+                        id="submit-all"
+                        type="button"
+                        class="btn btn-danger btn-sm mx-2"
+                >
+                    Submit All
+                </button>
+            </div>
+        </div>
+    </div>
+</nav>
+
+<!-- Main Content -->
+<div class="container-fluid main-content py-3">
+    <div class="row g-3 h-100">
+        <!-- Left column: just the Compiler & AI Tool card -->
+        <div class="col-12">
+            <div class="card h-100 shadow-sm">
+                <div class="card-header bg-primary text-white">
+                    Compiler Output & AI Tool
+                </div>
+                <div class="card-body">
+
+
+                    <div class="tab-content" id="pills-tabContent">
+
+                        <!-- ================= Compiler Tab ================= -->
+                        <div class="tab-pane fade show active" id="pills-compiler" role="tabpanel"
+                             aria-labelledby="pills-compiler-tab">
+                            <div class="container py-2">
+                                <div style="display:none">
+                                    {% csrf_token %}
+                                </div>
+                                {% for question in questions %}
+                                    <form
+                                            class="question-submit-form"
+                                            method="POST"
+                                            action="{% url 'experimental_app:submit-all' %}"
+                                    >
+                                        {% csrf_token %}
+
+                                        <!-- 1) QUESTION ID -->
+                                        <input type="hidden" name="question_id" value="{{ question.id }}">
+
+                                        <!-- 2) ATTEMPT NUMBER -->
+                                        <input type="hidden" name="attempt_no" value="1">
+
+                                        <!-- 3) THE CODE (filled by JS) -->
+                                        <input type="hidden" name="code" class="code-input" value="">
+
+                                        {# pick the right attempt_no once #}
+                                        <input
+                                                type="hidden"
+                                                name="attempt_no"
+                                                value="{% if is_experimental and redo_mode %}2{% endif %}"
+                                        />
+
+
+                                        <div class="card mb-4 shadow-sm">
+                                            <div class="card-header bg-secondary text-white">
+                                                Question {{ forloop.counter }}
+                                            </div>
+                                            <div class="card-body">
+
+                                                <!-- Prompt -->
+                                                <p>{{ question.question_string }}</p>
+
+                                                <!-- Monaco Editor placeholder -->
+                                                <div id="editor-{{ question.id }}"
+                                                     class="monaco-editor-container mb-3"
+                                                     data-question-id="{{ question.id }}"
+                                                     data-starter-code="{{ question.user_starter_code }}"
+                                                     style="height:200px;">
+                                                </div>
+
+                                                <!-- Run Code button -->
+                                                <button
+                                                        type="button"
+                                                        class="btn btn-success run-code-btn mb-3"
+                                                        data-question-id="{{ question.id }}"
+                                                        data-attempt-no="{{ attempt_no }}"
+                                                >
+                                                    Run Code
+                                                </button>
+
+                                                <!-- Output -->
+                                                <div id="output-{{ question.id }}"
+                                                     class="border rounded p-2 mb-2 bg-light text-dark"
+                                                     style="min-height:80px; overflow-y:auto;">
+                                                    Output will appear here…
+                                                </div>
+
+                                                <!-- Comparison -->
+                                                <div id="comparison-{{ question.id }}"
+                                                     class="border rounded p-2 bg-light text-dark"
+                                                     style="min-height:80px; overflow-y:auto;">
+                                                    Comparison will appear here…
+                                                </div>
+
+                                            </div>
+                                        </div>
+                                    </form>
+                                {% endfor %}
+                            </div>
+
+                        </div>
+
+                        {% if show_ai %}
+                            <div class="tab-pane fade" id="pills-ai-tool">
+                                <div class="card">
+                                    <div class="card-header bg-primary text-white">AI Chatbot</div>
+                                    <div class="card-body" id="chat-body"></div>
+                                    <div class="card-footer">
+                                        <div class="input-group">
+                                            <input type="text" id="user-input" class="form-control"
+                                                   placeholder="Type a message…">
+                                            <button class="btn btn-primary" onclick="sendMessage()">Send</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        {% endif %}
+
+                    </div> <!-- /.tab-content -->
+
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+<!-- Prism CSS and JS for code highlighting in AI responses -->
+<link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-java.min.js"></script>
+
+<!-- Diff Match Patch Library (if used) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/google-diff-match-patch/20121119/diff_match_patch.js"></script>
+
+<!-- Bootstrap JS Bundle -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+        integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
+        crossorigin="anonymous"></script>
+<!-- Monaco Editor Loader -->
+<script src="https://unpkg.com/monaco-editor@latest/min/vs/loader.js"></script>
+<!-- jQuery -->
+<script src="https://code.jquery.com/jquery-3.7.1.js" integrity="sha256-eKhayi8LEQwp4NKxN+CfCh+3qOVUtJn3QNZ0TciWLP4="
+        crossorigin="anonymous"></script>
+<!-- Google Generative AI (using an ES module CDN) -->
+<script type="module">
+    import {GoogleGenerativeAI} from "https://esm.run/@google/generative-ai";
+
+    const apiKey = "AIzaSyBMydRJXTiK2UGG0QhwSo8KMlv5mt8IFLg";
+    window.genAI = new GoogleGenerativeAI(apiKey);
+</script>
+<!-- External JavaScript files -->
+<script src="{% static 'js/javaCompletions.js' %}"></script>
+<script src="{% static 'js/manualDiagnostics.js' %}"></script>
+
+
+<!-- Run Code Button functionality (AJAX for testing code) -->
+<script type="text/javascript">
+    // --- Helpers ---
+    function clearPreviousOutput(compilerOutput, comparisonContainer) {
+        compilerOutput.innerHTML = "";
+        comparisonContainer.innerHTML = "";
+    }
+
+    function displayError(container, message) {
+        container.innerHTML = `<pre class="compiler-error">${message}</pre>`;
+    }
+
+    function displayTypingIndicator(container) {
+        let dots = "";
+        return setInterval(() => {
+            dots = dots.length < 3 ? dots + "." : "";
+            container.innerText = "Compiling" + dots;
+        }, 500);
+    }
+
+    async function sendCodeToServer(code, questionId, attemptNo) {
+        const url = "{% url 'experimental_app:run-code' %}";
+        const response = await fetch(url, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-CSRFToken": document.querySelector('[name=csrfmiddlewaretoken]').value
+            },
+            body: new URLSearchParams({
+                code,
+                question_id: questionId,
+                attempt_no: attemptNo
+            })
+        });
+        return response.json();
+    }
+
+    function processServerResponse(data, compilerOutput, comparisonContainer) {
+        if (data.error) {
+            displayError(compilerOutput, data.error);
+            return;
+        }
+
+        let outputHtml = "<h5>Program Output:</h5><ul>";
+        let comparisonHtml = "<h5>Comparison Results:</h5>";
+
+        data.results.forEach((result, idx) => {
+            outputHtml += `<li><strong>Test ${idx + 1}:</strong> ${result.actual_output.trim()}</li>`;
+
+            const diffHtml = highlightDifferences(
+                result.expected_output.trim(),
+                result.actual_output.trim()
+            );
+
+            const passed = result.expected_output.trim() === result.actual_output.trim()
+                ? `<span style="color: green;">✔ Passed</span>`
+                : `<span style="color: red;">❌ Failed</span>`;
+
+            comparisonHtml += `
+        <div>
+          <h6>Test Case ${idx + 1}</h6>
+          <strong>Input:</strong> ${result.input ? result.input.trim() : "N/A"}<br>
+          <strong>Expected Output:</strong> ${result.expected_output.trim()}<br>
+          <strong>Actual Output:</strong> ${diffHtml}<br>
+          <strong>Result:</strong> ${passed}
+        </div>
+        <hr>`;
+        });
+
+        outputHtml += "</ul>";
+        compilerOutput.innerHTML = outputHtml;
+        comparisonContainer.innerHTML = comparisonHtml;
+    }
+
+    function highlightDifferences(expected, actual) {
+        let highlighted = "";
+        for (let i = 0; i < Math.max(expected.length, actual.length); i++) {
+            highlighted += expected[i] === actual[i]
+                ? `<span style="color:green;">${actual[i] || ""}</span>`
+                : `<span style="color:red;">${actual[i] || ""}</span>`;
+        }
+        return highlighted;
+    }
+
+
+    // --- Attach to each Run button ---
+    document.querySelectorAll(".run-code-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+            const qid = btn.dataset.questionId;
+            const attemptNo = btn.dataset.attemptNo;     // ← pull it here
+            const editor = window.editors[qid];
+            const code = editor.getValue();
+            const out = document.getElementById(`output-${qid}`);
+            const cmp = document.getElementById(`comparison-${qid}`);
+
+            clearPreviousOutput(out, cmp);
+
+            if (!code.includes("class Main")) {
+                displayError(out, "Error: code must define a class named 'Main'.");
+                return;
+            }
+
+            const typingInterval = displayTypingIndicator(out);
+
+            try {
+                // pass the attemptNo along!
+                const data = await sendCodeToServer(code, qid, attemptNo);
+                clearInterval(typingInterval);
+                processServerResponse(data, out, cmp);
+            } catch (err) {
+                clearInterval(typingInterval);
+                console.error(err);
+                displayError(out, "An error occurred while running your code.");
+            }
+        });
+    });
+
+
+    document.getElementById("submit-all").addEventListener("click", async () => {
+        // 1️⃣ collect all three submissions
+        const attemptNo = {{ exp_pass }};
+        const submissions = Array.from(
+            document.querySelectorAll(".monaco-editor-container")
+        ).map(el => {
+            const qid = el.dataset.questionId;
+            return {
+                question_id: qid,
+                code: window.editors[qid].getValue(),
+                attempt_no: attemptNo
+            };
+        });
+
+        // 2️⃣ post them as JSON
+        const resp = await fetch("{% url 'experimental_app:submit-all' %}", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {
+                "Content-Type": "application/json",
+                "X-CSRFToken": "{{ csrf_token }}"
+            },
+            body: JSON.stringify({submissions})
+        });
+
+        if (!resp.ok) {
+            console.error("submit-all failed:", resp.statusText);
+            return;
+        }
+
+        const data = await resp.json();
+
+        // 3️⃣ act on the server’s instructions
+        if (data.status === "redirect") {
+            // either all‐wrong on first pass or second pass
+            window.location = data.redirect_url;
+        } else if (data.status === "next" && data.next === "second-pass") {
+            // at least one passed first, now do second pass on kept ones
+            window.location = data.redirect_url;
+        } else {
+            console.error("Unexpected response from submit-all:", data);
+        }
+    });
+
+</script>
+
+
+<!-- Helper function for AI responses (formatting code blocks, bullet lists, numbered lists, etc.) -->
+<script type="text/javascript">
+    function formatAIResponse(text) {
+        return text.replace(/```java([\s\S]*?)```/g, (_, code) =>
+            `<pre><code class="language-java">${code.trim()}</code></pre>`
+        ).split("\n").map(line => processListFormatting(line)).join("\n");
+    }
+
+    function processListFormatting(line) {
+        if (/^\s*([-*+])\s+/.test(line)) return wrapInList(line, "ul");
+        if (/^\s*\d+\.\s+/.test(line)) return wrapInList(line, "ol");
+        return line;
+    }
+
+    function wrapInList(line, type) {
+        let content = line.replace(/^\s*([-*+]|\d+\.)\s+/, "");
+        return `<${type}><li>${content}</li></${type}>`;
+    }
+
+    window.editors = {};
+    setupMonacoEditor();
+
+    function setupMonacoEditor() {
+        require.config({paths: {'vs': 'https://unpkg.com/monaco-editor@latest/min/vs'}});
+
+        require(['vs/editor/editor.main'], () => {
+            document.querySelectorAll('.monaco-editor-container')
+                .forEach(container => {
+                    const qid = container.dataset.questionId;
+                    const starter = container.dataset.starterCode || '';
+
+                    // create and store each editor
+                    window.editors[qid] = monaco.editor.create(container, {
+                        value: starter,
+                        language: 'java',
+                        theme: 'vs-dark',
+                        automaticLayout: true
+                    });
+
+                    // optional: register completions if you have that hook
+                    if (typeof registerJavaCompletions === 'function') {
+                        registerJavaCompletions(window.editors[qid]);
+                    }
+                });
+            initManualDiagnostics(window.editors);
+        });
+    }
+</script>
+
+<!-- AI Chatbot functionality -->
+<script type="text/javascript">
+    document.getElementById("user-input").addEventListener("keydown", function (e) {
+        if (e.key === "Enter") {
+            e.preventDefault();
+            sendMessage();
+        }
+    });
+
+    async function sendMessage() {
+        let userInput = document.getElementById("user-input").value.trim();
+        if (!userInput) return;
+
+        addUserMessage(userInput);
+        document.getElementById("user-input").value = "";
+        let botMessage = addBotMessage("Typing...");
+
+        let typingInterval = displayTypingIndicator(botMessage);
+
+        try {
+            const aiResponse = await getAIResponse(userInput);
+            clearInterval(typingInterval);
+            botMessage.innerHTML = formatAIResponse(aiResponse);
+            Prism.highlightAll();
+        } catch (error) {
+            clearInterval(typingInterval);
+            botMessage.innerText = "Error fetching response. Please try again.";
+            console.error("Error:", error);
+        }
+
+        scrollToBottom("chat-body");
+    }
+
+    function addUserMessage(message) {
+        let chatBody = document.getElementById("chat-body");
+        let userMessage = createMessageElement("chat-message bg-primary text-white rounded p-2 mb-2 text-end", message);
+        chatBody.appendChild(userMessage);
+    }
+
+    function addBotMessage(initialText) {
+        let chatBody = document.getElementById("chat-body");
+        let botMessage = createMessageElement("chat-message bg-secondary text-light rounded p-2 mb-2 text-start", initialText);
+        chatBody.appendChild(botMessage);
+        return botMessage;
+    }
+
+    function createMessageElement(className, text) {
+        let messageElement = document.createElement("div");
+        messageElement.className = className;
+        messageElement.innerText = text;
+        return messageElement;
+    }
+
+    function displayTypingIndicator(container) {
+        let dots = "";
+        return setInterval(() => {
+            dots = dots.length < 3 ? dots + "." : "";
+            container.innerText = "Typing" + dots;
+        }, 500);
+    }
+
+    async function getAIResponse(userInput) {
+        const model = genAI.getGenerativeModel({model: "gemini-2.0-flash"});
+        const result = await model.generateContent(userInput);
+        return result.response.text();
+    }
+
+    function scrollToBottom(containerId) {
+        let chatBody = document.getElementById(containerId);
+        chatBody.scrollTop = chatBody.scrollHeight;
+    }
+</script>
+
+</body>
+</html>

@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import tempfile
@@ -18,49 +19,30 @@ from editor.models import Questions, ParticipantProfile, Submission
 
 @login_required
 def editor(request):
-    # 1️⃣ Fetch the user’s profile & cohort
     profile = request.user.participantprofile
-    is_experimental = (profile.group == ParticipantProfile.EXPERIMENTAL)
+    is_exp = (profile.group == ParticipantProfile.EXPERIMENTAL)
 
-    # 2️⃣ Detect redo mode via ?redo=1 (only for Experimental cohort)
-    redo_mode = (is_experimental and request.GET.get('redo') == '1')
+    # 1️⃣ Read which pass we're on (1 or 2)
+    exp_pass = request.session.get("experimental_pass", 1)
 
-    # 3️⃣ Build the question list
-    if redo_mode:
-        # Only those questions they got CORRECT on attempt 1 WITH AI
-        passed_qids = Submission.objects.filter(
-            user=request.user,
-            attempt_no=1,
-            used_ai=True,
-            is_correct=True
-        ).values_list('question_id', flat=True)
-
-        # Preserve your desired ordering
-        questions = list(
-            Questions.objects
-            .filter(id__in=passed_qids)
-            .order_by('id')
-        )
+    # 2️⃣ Pick questions + AI visibility
+    if is_exp and exp_pass == 2:
+        # second pass: only the kept questions
+        keep_ids = request.session.get("experimental_keep_ids", [])
+        questions = Questions.objects.filter(id__in=keep_ids).order_by("id")
+        show_ai = False
     else:
-        # First pass: show the first 3 questions
-        questions = list(
-            Questions.objects
-            .all()
-            .order_by('id')[:3]
-        )
+        # first pass normal
+        questions = Questions.objects.all().order_by("id")[:3]
+        show_ai = True
+        # and ensure we're set back to pass 1 if they just hit /editor/ manually
+        request.session["experimental_pass"] = 1
 
-    # 4️⃣ (Optional) Compute any scores you want to display
-    # For example: first‑attempt correct count
-    first_score = profile.first_attempt_correct
-    second_score = profile.second_attempt_correct
-
-    # 5️⃣ Render
-    return render(request, 'editor.html', {
-        'questions': questions,
-        'is_experimental': is_experimental,
-        'redo_mode': redo_mode,
-        'first_score': first_score,
-        'second_score': second_score,
+    return render(request, "experimental_app/editor.html", {
+        "questions": questions,
+        "is_experimental": is_exp,
+        "exp_pass": exp_pass,  # so your JS can do attempt_no = {{ exp_pass }}
+        "show_ai": show_ai,
     })
 
 
@@ -196,92 +178,202 @@ def logout_view(request):
     return redirect('experimental_app:login')
 
 
-def submit_code(request):
+@login_required
+def submit_all(request):
     """
-    Handle the user clicking "Submit":
-    - Compile & run their Main.java for the given question.
-    - Record a Submission (which question, attempt_no, used_ai, is_correct).
-    - Update the profile's counters.
-    - Redirect to either:
-        • /editor/?redo=1  (experimental, first attempt)
-        • /editor/         (all other cases)
+    Accepts a JSON payload:
+      { "submissions": [
+          { "question_id": 5, "code": "...", "attempt_no": 1 },
+          { "question_id": 6, "code": "...", "attempt_no": 1 },
+          { "question_id": 7, "code": "...", "attempt_no": 1 }
+        ]
+      }
+    Runs through each, records Submission, updates counters, then returns:
+      • next="second-pass", keep_ids=[…], hide_ai=True
+      • or next="thank-you", redirect_url="/…"
     """
-    # 1) Pull form data
-    code = request.POST.get("code", "").strip()
-    qid = request.POST.get("question_id")
-    attempt_no = int(request.POST.get("attempt_no", "1"))
+    payload = json.loads(request.body.decode('utf-8'))
+    submissions = payload.get("submissions", [])
+    user = request.user
+    profile = user.participantprofile
+    is_exp = (profile.group == ParticipantProfile.EXPERIMENTAL)
 
-    if not code or not qid:
-        return redirect("editor")
+    question_ids = []  # will track the order
+    passed_ids = []  # those that passed on this pass
 
-    # 2) Lookup objects
-    question = get_object_or_404(Questions, pk=int(qid))
-    profile = request.user.participantprofile
+    # 1) Compile, run & record each
+    for item in submissions:
+        qid = int(item["question_id"])
+        code = item["code"]
+        attempt = int(item["attempt_no"])
+        question = get_object_or_404(Questions, pk=qid)
 
-    # Determine if AI was visible:
-
-    used_ai = (profile.group == ParticipantProfile.EXPERIMENTAL and attempt_no == 1)
-
-    # 3) Compile & test
-    is_correct = False
-    try:
+        # compile & run
+        is_correct = False
         with tempfile.TemporaryDirectory() as tmp:
-            # compile Main.java
-            cpp = compile_java_file(code, "Main.java", tmp)
-            if cpp.returncode == 0:
+            compile_proc = compile_java_file(code, "Main.java", tmp)
+            if compile_proc.returncode == 0:
                 if question.question_type == "IO":
-                    # pass every I/O test
                     is_correct = all(
                         execute_java_file("Main", tmp, input_data=tc.test_input).strip()
                         == tc.expected_output.strip()
                         for tc in question.test_cases.all()
                     )
                 else:
-                    # unit test via existing CountPositiveRunner
+                    # unit‐test path
                     runner_src = "/Users/jaden/PycharmProjects/CodeEditor/java/CountPositiveRunner.java"
                     dest = os.path.join(tmp, "CountPositiveRunner.java")
                     subprocess.run(["cp", runner_src, dest], check=True)
-
-                    cr = subprocess.run(["javac", dest], capture_output=True, text=True)
-                    if cr.returncode == 0:
-                        output = execute_java_file("CountPositiveRunner", tmp).splitlines()
-                        actual = None
-                        for line in output:
-                            if line.startswith("Actual:"):
-                                actual = line.split("Actual:")[1].strip()
-                                break
+                    compile_runner = subprocess.run(
+                        ["javac", dest], capture_output=True, text=True
+                    )
+                    if compile_runner.returncode == 0:
+                        out_lines = execute_java_file("CountPositiveRunner", tmp).splitlines()
+                        actual = next(
+                            (l.split("Actual:")[1].strip()
+                             for l in out_lines if l.startswith("Actual:")),
+                            None
+                        )
                         is_correct = (actual == "6")
-    except Exception:
-        is_correct = False
 
-    # 4) Record the submission
-    Submission.objects.create(
-        user=request.user,
-        question=question,
-        attempt_no=attempt_no,
-        used_ai=used_ai,
-        is_correct=is_correct
-    )
+        # record in DB
+        Submission.objects.create(
+            user=user,
+            question=question,
+            attempt_no=attempt,
+            used_ai=(is_exp and attempt == 1),
+            is_correct=is_correct
+        )
 
-    # 5) Update the participant’s counters
-    if attempt_no == 1:
-        if is_correct:
-            profile.first_attempt_correct += 1
+        # update counters & passed_ids
+        if attempt == 1:
+            if is_correct:
+                profile.first_attempt_correct += 1
+                passed_ids.append(qid)
+            else:
+                profile.first_attempt_incorrect += 1
         else:
-            profile.first_attempt_incorrect += 1
-    elif attempt_no == 2 and profile.group == ParticipantProfile.EXPERIMENTAL:
-        if is_correct:
-            profile.second_attempt_correct += 1
+            # second pass only increments second_attempt_correct
+            if is_correct and is_exp:
+                profile.second_attempt_correct += 1
 
     profile.save()
 
-    # 6) Redirect appropriately
-    if profile.group == ParticipantProfile.EXPERIMENTAL and attempt_no == 1:
-        # send them into "redo" mode
-        return redirect(f"{reverse('editor')}?redo=1")
-    else:
-        # normal flow: next question (session logic inside editor() handles wrapping)
-        return redirect("editor")
+    # 2) Decide what comes next
+    # — experimental, first pass
+    if is_exp and submissions and submissions[0]["attempt_no"] == 1:
+        # no one passed → skip straight to thank you
+        if not passed_ids:
+            return JsonResponse({
+                "status": "redirect",
+                "redirect_url": reverse("control_app:thank-you")
+            })
+
+        # ★ store them in session for the second pass ★
+        request.session['experimental_pass'] = 2
+        request.session['experimental_keep_ids'] = passed_ids
+        request.session.modified = True
+
+        # some passed → do second-pass on those only
+        return JsonResponse({
+            "status": "next",
+            "next": "second-pass",
+            "keep_ids": passed_ids,
+            "redirect_url": reverse("control_app:editor")
+        })
+
+    # — all other cases (second pass or non-experimental)
+    return JsonResponse({
+        "status": "redirect",
+        "redirect_url": reverse("thank-you")
+    })
+
+
+# @require_POST
+# def submit_code(request):
+#     """
+#     1️⃣ First pass (attempt_no=1): AI available
+#       - run & record every test
+#       - mark used_ai=True
+#       - set session['second_pass']=True
+#       - return 200 OK (front-end will reload editor for pass 2)
+#     2️⃣ Second pass (attempt_no=2): AI hidden
+#       - run & record every test
+#       - mark used_ai=False
+#       - clear session['second_pass']
+#       - return JSON { redirect: thank_you_url }
+#     """
+#     # pull your form fields
+#     code = request.POST.get("code", "").strip()
+#     qid = request.POST.get("question_id")
+#     attempt_no = int(request.POST.get("attempt_no", "1"))
+#
+#     if not code or not qid:
+#         return JsonResponse({"error": "Missing code or question_id"}, status=400)
+#
+#     # lookup
+#     question = get_object_or_404(Questions, pk=int(qid))
+#     profile = request.user.participantprofile
+#
+#     # compile & run exactly as before...
+#     is_correct = False
+#     try:
+#         with tempfile.TemporaryDirectory() as tmp:
+#             # write & compile Main.java
+#             proc = compile_java_file(code, "Main.java", tmp)
+#             if proc.returncode == 0:
+#                 if question.question_type == "IO":
+#                     is_correct = all(
+#                         execute_java_file("Main", tmp, input_data=tc.test_input).strip()
+#                         == tc.expected_output.strip()
+#                         for tc in question.test_cases.all()
+#                     )
+#                 else:
+#                     # compile & run your TestRunner…
+#                     runner_src = "/path/to/CountPositiveRunner.java"
+#                     dest = os.path.join(tmp, "CountPositiveRunner.java")
+#                     subprocess.run(["cp", runner_src, dest], check=True)
+#                     cr = subprocess.run(
+#                         ["javac", dest], capture_output=True, text=True
+#                     )
+#                     if cr.returncode == 0:
+#                         lines = execute_java_file("CountPositiveRunner", tmp).splitlines()
+#                         actual = next(
+#                             (l.split("Actual:")[1].strip() for l in lines if l.startswith("Actual:")),
+#                             None
+#                         )
+#                         is_correct = (actual == "6")
+#     except Exception:
+#         is_correct = False
+#
+#     # decide AI-usage flag
+#     used_ai = (attempt_no == 1)
+#
+#     # persist
+#     Submission.objects.create(
+#         user=request.user,
+#         question=question,
+#         attempt_no=attempt_no,
+#         used_ai=used_ai,
+#         is_correct=is_correct,
+#     )
+#
+#     # update your profile counters if you like…
+#
+#     # now branch by attempt number
+#     if attempt_no == 1:
+#         # 1️⃣ First pass → mark session for second pass
+#         request.session["second_pass"] = True
+#         request.session.modified = True
+#
+#         # front-end will simply reload editor (no redirect in JSON)
+#         return JsonResponse({"ok": True})
+#
+#     else:
+#         # 2️⃣ Second pass → clear the flag, and send back a redirect
+#         request.session.pop("second_pass", None)
+#         thank_you = reverse("experimental_app:thank_you")
+#         return JsonResponse({"redirect": thank_you})
 
 
 def compile_java_file(code, filename, temp_dir):
@@ -316,7 +408,7 @@ def execute_java_file(class_name, temp_dir, input_data=None):
 
 
 def register(request):
-    template = 'experimental_app/login_register_e.html'
+    template = 'editor/login_register_e.html'
     login_form = AuthenticationForm()
     context = {'form': login_form}
 
@@ -346,11 +438,18 @@ def register(request):
     return render(request, template, context)
 
 
+def thank_you(request):
+    # clean up
+    request.session.pop('experimental_pass', None)
+    request.session.pop('experimental_keep_ids', None)
+    return render(request, "experimental_app/thank_you.html")
+
+
 class ExperimentalLoginView(LoginView):
     template_name = "experimental_app/login_register_e.html"
     redirect_authenticated_user = True
     # once you’re logged in, go straight to your editor
-    success_url = reverse_lazy("editor")
+    success_url = reverse_lazy("experimental_app:editor")
 
     def get_success_url(self):
         return self.success_url
