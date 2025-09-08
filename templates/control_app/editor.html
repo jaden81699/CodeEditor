@@ -403,6 +403,8 @@
 
             // gather all question_id + code pairs
             const data = new URLSearchParams();
+            console.log("Forms found:", forms.length);
+            console.log("Payload:", data.toString());
             forms.forEach(form => {
                 const qid = form.querySelector("input[name='question_id']").value;
                 const code = window.editors[qid].getValue();

@@ -235,7 +235,7 @@ def submit_all(request):
                             None
                         )
                         is_correct = (actual == "6")
-
+        print(f"[DEBUG]    → is_correct = {is_correct}")
         # record in DB
         Submission.objects.create(
             user=user,
@@ -256,17 +256,21 @@ def submit_all(request):
             # second pass only increments second_attempt_correct
             if is_correct and is_exp:
                 profile.second_attempt_correct += 1
-
+    print(f"[DEBUG] final passed_ids = {passed_ids}")
     profile.save()
 
     # 2) Decide what comes next
     # — experimental, first pass
-    if is_exp and submissions and submissions[0]["attempt_no"] == 1:
+    # make absolutely sure the client-sent attempt_no is an int
+    exp_pass = request.session.get("experimental_pass", 1)
+
+    if is_exp and exp_pass:
         # no one passed → skip straight to thank you
         if not passed_ids:
+            print("[DEBUG] No passed_ids → redirecting to thank-you")
             return JsonResponse({
                 "status": "redirect",
-                "redirect_url": reverse("control_app:thank-you")
+                "redirect_url": reverse("experimental_app:thank-you")
             })
 
         # ★ store them in session for the second pass ★
@@ -279,13 +283,13 @@ def submit_all(request):
             "status": "next",
             "next": "second-pass",
             "keep_ids": passed_ids,
-            "redirect_url": reverse("control_app:editor")
+            "redirect_url": reverse("experimental_app:editor")
         })
 
     # — all other cases (second pass or non-experimental)
     return JsonResponse({
         "status": "redirect",
-        "redirect_url": reverse("thank-you")
+        "redirect_url": reverse("experimental_app:thank-you")
     })
 
 

@@ -123,6 +123,7 @@ def submit_all(request):
     """
     question_ids = request.POST.getlist('question_id')
     codes = request.POST.getlist('code')
+    print("POSTed QIDs:", question_ids)
 
     profile = request.user.participantprofile
     is_ctrl = profile.group == ParticipantProfile.CONTROL
@@ -179,12 +180,15 @@ def submit_all(request):
         if not is_correct and control_pass == 1:
             wrong_ids.append(q.id)
 
+    print(">> received qids:", question_ids)
+    print(">> received codes:", len(codes), "items")
     profile.save()
 
     # now decide where to go
     if is_ctrl:
         if control_pass == 1:
             # prepare second pass
+            print(">> wrong_ids going into session:", wrong_ids)
             request.session['redo_questions'] = wrong_ids
             request.session['control_pass'] = 2
             request.session.modified = True
@@ -205,7 +209,7 @@ def submit_all(request):
             # pass 2 always goes to thank-you
         return JsonResponse({
             "next": "thank-you",
-            "redirect_url": reverse("thank-you")
+            "redirect_url": reverse("control_app:thank-you")
         })
 
     # non-control fallback
