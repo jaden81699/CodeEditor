@@ -77,6 +77,8 @@ def editor(request):
     profile = request.user.participantprofile
     is_control = (profile.group == ParticipantProfile.CONTROL)
     is_experimental = False
+    profile.control_assessment_done_and_ai_used = True
+    print(profile.control_assessment_done_and_ai_used)
 
     # which pass are they on? 1 = first try, 2 = second try
     control_pass = request.session.get("control_pass", 1)
@@ -206,7 +208,10 @@ def submit_all(request):
                     "redirect_url": reverse("control_app:editor")
                 })
 
-            # pass 2 always goes to thank-you
+        # pass 2 always goes to thank-you
+        # probably assign control_assessment_done_and_ai_used:
+        profile.control_assessment_done_and_ai_used = True
+        print(profile.control_assessment_done_and_ai_used)
         return JsonResponse({
             "next": "thank-you",
             "redirect_url": reverse("control_app:thank-you")

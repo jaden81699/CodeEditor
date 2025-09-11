@@ -11,19 +11,43 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
 from pathlib import Path
+import os
+from pathlib import Path
+import environ
+from environ import ImproperlyConfigured
+
+
+def _csv(name, default=""):
+    raw = env.str(name, default=default)
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+env = environ.Env()
+
+# Load .env if present (local). On PythonAnywhere, the platform env will override these.
+environ.Env.read_env(BASE_DIR / ".env")
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-jt$*i)o0^#sphe^l!!bp)x5e=1ya)+fn*5oyj0s$q780=^8d^='
+SECRET_KEY = env.str("SECRET_KEY")  # set this in both envs
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
-ALLOWED_HOSTS = ["codeeditor2025.pythonanywhere.com"]  # add your custom domain too if using one
+DEBUG = env.bool("DEBUG", default=False)
+
+# Hosts / CSRF
+ALLOWED_HOSTS = _csv(
+    "ALLOWED_HOSTS",
+    default="localhost,127.0.0.1,[::1]" if DEBUG else ""  # prod MUST set this via env
+)
+
+CSRF_TRUSTED_ORIGINS = _csv(
+    "CSRF_TRUSTED_ORIGINS",
+    default="http://localhost:8000,https://localhost:8000" if DEBUG else ""
+)
 
 # Application definition
 
@@ -146,3 +170,22 @@ MEDIA_ROOT = BASE_DIR / "media"
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+env = environ.Env(
+    DEBUG=(bool, False),
+)
+# Load .env if present
+environ.Env.read_env(os.path.join(BASE_DIR, ".env"))
+
+
+def require(name: str) -> str:
+    val = env.str(name, default="")
+    if not val:
+        raise ImproperlyConfigured(f"{name} is required but not set")
+    return val
+
+
+# gets variables from .env
+QUALTRICS_PREASSESSMENT_LINK = require("QUALTRICS_PREASSESSMENT_LINK")
+QUALTRICS_POSTASSESSMENT_LINK = require("QUALTRICS_POSTASSESSMENT_LINK")
+SITE_URL = env.str("SITE_URL", default="")  # e.g., https://codeeditor2025.pythonanywhere.com
