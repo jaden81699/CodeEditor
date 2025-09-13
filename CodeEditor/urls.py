@@ -16,11 +16,11 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
-from django.contrib.auth import views as auth_views
 
-from control_app.views import run_code
-from editor import views
+from editor import views as experimental_views
+from control_app import views as control_views
 from editor.views import create_or_edit_questions, delete_question
+
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -29,4 +29,7 @@ urlpatterns = [
     path('questions/', create_or_edit_questions, name='create-or-edit-questions'),
     path('questions/<int:question_id>/', create_or_edit_questions, name='create-or-edit-questions'),
     path('questions/delete/<int:question_id>/', delete_question, name='delete-question'),
+    path("pre-assessment/", control_views.pre_assessment_questionnaire, name="pre-assessment"),
+    path("pre-assessment-complete/", control_views.pre_survey_complete, name="pre-survey-complete"),
+    path("post-assessment/", experimental_views.post_assessment_questionnaire, name="post-assessment"),
 ]

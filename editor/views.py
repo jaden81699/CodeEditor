@@ -7,12 +7,13 @@ from django.contrib.auth import logout, login
 from django.contrib.auth.forms import UserCreationForm, AuthenticationForm
 from django.contrib.auth.models import User
 from django.shortcuts import render, get_object_or_404, redirect
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
 from django.urls import reverse, reverse_lazy
 from django.views.decorators.http import require_POST
 from django.utils.functional import cached_property
 from django.contrib.auth.views import LoginView
 
+from CodeEditor import settings
 from editor.forms import QuestionsForm, TestCaseFormSet
 from editor.models import Questions, ParticipantProfile, Submission
 
@@ -172,12 +173,6 @@ def delete_question(request, question_id):
     return render(request, 'confirm-delete.html', {'question': question})
 
 
-def logout_view(request):
-    """Logout user and redirect to login page."""
-    logout(request)
-    return redirect('experimental_app:login')
-
-
 @login_required
 def submit_all(request):
     """
@@ -195,7 +190,7 @@ def submit_all(request):
     payload = json.loads(request.body.decode('utf-8'))
     submissions = payload.get("submissions", [])
     user = request.user
-    profile = user.participantprofile
+    profile = request.user.participantprofile
     is_exp = (profile.group == ParticipantProfile.EXPERIMENTAL)
 
     question_ids = []  # will track the order
@@ -262,10 +257,10 @@ def submit_all(request):
     # 2) Decide what comes next
     # — experimental, first pass
     # make absolutely sure the client-sent attempt_no is an int
-    exp_pass = request.session.get("experimental_pass", 1)
+    exp_pass_num = request.session.get("experimental_pass", 1)
 
-    if is_exp and exp_pass:
-        # no one passed → skip straight to thank you
+    if is_exp and exp_pass_num == 1:
+        # no question passed on first attempt→ skip straight to thank you
         if not passed_ids:
             print("[DEBUG] No passed_ids → redirecting to thank-you")
             return JsonResponse({
@@ -279,6 +274,8 @@ def submit_all(request):
         request.session.modified = True
 
         # some passed → do second-pass on those only
+        profile.both_experimental_code_assessments_done = True
+        #print(profile.both_experimental_code_assessments_done)
         return JsonResponse({
             "status": "next",
             "next": "second-pass",
@@ -287,10 +284,31 @@ def submit_all(request):
         })
 
     # — all other cases (second pass or non-experimental)
+    profile.both_experimental_code_assessments_done = True
+    profile.save()
     return JsonResponse({
         "status": "redirect",
-        "redirect_url": reverse("experimental_app:thank-you")
+        "redirect_url": reverse("post-assessment")
     })
+
+
+@login_required
+def post_assessment_questionnaire(request):
+    # Guard: only allow after assessment is complete
+    # Both control and experimental group will use this views function
+    group_of_user = request.user.participantprofile.group
+    profile = request.user.participantprofile
+    if not (profile.both_experimental_code_assessments_done | profile.both_control_code_assessments_done):
+        return HttpResponse("could not go through")  # or wherever your assessment lives
+
+    qualtrics_link = settings.QUALTRICS_POSTASSESSMENT_LINK  # e.g. "https://yourdcid.qualtrics.com"
+    # Pass identifiers you want to capture as Embedded Data in Qualtrics
+    url = (
+        f"{qualtrics_link}"
+        f"?uid={request.user.pk}"
+        f"&group={group_of_user}"
+    )
+    return redirect(url)
 
 
 # @require_POST
@@ -449,11 +467,17 @@ def thank_you(request):
     return render(request, "experimental_app/thank_you.html")
 
 
+def experimental_logout_view(request):
+    """Logout user and redirect to login page."""
+    logout(request)
+    return redirect('experimental_app:login')
+
+
 class ExperimentalLoginView(LoginView):
     template_name = "experimental_app/login_register_e.html"
     redirect_authenticated_user = True
     # once you’re logged in, go straight to your editor
-    success_url = reverse_lazy("experimental_app:editor")
+    success_url = reverse_lazy("pre-assessment")
 
     def get_success_url(self):
         return self.success_url

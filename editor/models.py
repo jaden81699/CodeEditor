@@ -51,7 +51,8 @@ class ParticipantProfile(models.Model):
     first_attempt_incorrect = models.PositiveSmallIntegerField(default=0)
     # second‑round counters (only meaningful for the experimental group)
     second_attempt_correct = models.PositiveSmallIntegerField(default=0)
-    control_assessment_done_and_ai_used = models.BooleanField(default=False)
+    both_experimental_code_assessments_done = models.BooleanField(default=False)
+    both_control_code_assessments_done = models.BooleanField(default=False)
 
 
 class Submission(models.Model):

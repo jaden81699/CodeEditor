@@ -5,12 +5,13 @@ import tempfile
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import UserCreationForm, AuthenticationForm
 from django.contrib.auth.models import User
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse, HttpResponseForbidden, HttpResponseBadRequest
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import authenticate, login, logout
 from django.urls import reverse_lazy, reverse
 from django.contrib.auth.views import LoginView
 
+from CodeEditor import settings
 from editor.models import ParticipantProfile, Questions, Submission
 from editor.forms import QuestionsForm, TestCaseFormSet
 from editor.views import editor as core_editor, compile_java_file, execute_java_file
@@ -208,20 +209,17 @@ def submit_all(request):
                     "redirect_url": reverse("control_app:editor")
                 })
 
-        # pass 2 always goes to thank-you
-        # probably assign control_assessment_done_and_ai_used:
-        profile.control_assessment_done_and_ai_used = True
-        print(profile.control_assessment_done_and_ai_used)
+        # pass 2 always goes to post assessment
+        profile.both_control_code_assessments_done = True
+        profile.save()
+        # print(profile.both_control_code_assessments_done)
         return JsonResponse({
-            "next": "thank-you",
-            "redirect_url": reverse("control_app:thank-you")
+            "status": "redirect",
+            "redirect_url": reverse("post-assessment")
         })
 
     # non-control fallback
-    return JsonResponse({
-        "next": "editor",
-        "redirect_url": reverse("control_app:editor")
-    })
+    return HttpResponse("An unexpected error has occurred")
 
 
 # @login_required
@@ -401,11 +399,60 @@ def run_code(request):
     return JsonResponse({"results": results})
 
 
+@login_required
+def pre_assessment_questionnaire(request):
+    group_of_user = request.user.participantprofile.group
+    qualtrics_link = settings.QUALTRICS_PREASSESSMENT_LINK  # e.g. "https://yourdcid.qualtrics.com"
+    print(qualtrics_link)
+    # Pass identifiers you want to capture as Embedded Data in Qualtrics
+    url = (
+        f"{qualtrics_link}"
+        f"?uid={request.user.pk}"
+        f"&group={group_of_user}"
+    )
+    return redirect(url)
+
+
+@login_required
+def pre_survey_complete(request):
+    # Read what Qualtrics sends back
+    q_uid = request.GET.get("uid")
+    response_id = request.GET.get("responseId")  # useful to store
+    user = request.user
+    profile = user.participantprofile
+
+    # Basic safety: the returning uid must match the logged-in user
+    if q_uid and str(user.pk) != str(q_uid):
+        return HttpResponseForbidden("UID mismatch")
+
+    # Mark completion and store the response id
+    profile.pre_survey_done = True
+    profile.pre_survey_response_id = response_id
+    profile.save()
+
+    # Decide next step using your server truth
+    group = profile.group
+    if group == "C":
+        return redirect("control_app:editor")  # e.g., control app landing
+    elif group == "E":
+        return redirect("experimental_app:editor")  # e.g., experimental app landing
+    return HttpResponseBadRequest("Couldn't find your group")
+
+
 def thank_you(request):
     return render(request, "control_app/thank_you.html")
 
 
-def logout_view(request):
+class ControlLoginView(LoginView):
+    template_name = "control_app/login_register_c.html"
+    redirect_authenticated_user = True
+    success_url = reverse_lazy("pre-assessment")
+
+    def get_success_url(self):
+        return self.success_url
+
+
+def control_logout_view(request):
     """Logout user and redirect to login page."""
     logout(request)
     return redirect('control_app:login')
