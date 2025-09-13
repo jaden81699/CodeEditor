@@ -250,8 +250,13 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
         integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
         crossorigin="anonymous"></script>
-<!-- Monaco Editor Loader -->
-<script src="https://unpkg.com/monaco-editor@latest/min/vs/loader.js"></script>
+<!-- Monaco Editor Loader locally -->
+<script src="{% static 'monaco/vs/loader.js' %}"></script>
+<script>
+  // Point RequireJS to the local 'vs' folder
+  require.config({paths: { 'vs': '{% static "monaco/vs" %}' }});
+</script>
+
 <!-- jQuery -->
 <script src="https://code.jquery.com/jquery-3.7.1.js" integrity="sha256-eKhayi8LEQwp4NKxN+CfCh+3qOVUtJn3QNZ0TciWLP4="
         crossorigin="anonymous"></script>
@@ -463,8 +468,6 @@
     setupMonacoEditor();
 
     function setupMonacoEditor() {
-        require.config({paths: {'vs': 'https://unpkg.com/monaco-editor@latest/min/vs'}});
-
         require(['vs/editor/editor.main'], () => {
             document.querySelectorAll('.monaco-editor-container')
                 .forEach(container => {
@@ -484,7 +487,9 @@
                         registerJavaCompletions(window.editors[qid]);
                     }
                 });
-            initManualDiagnostics(window.editors);
+            if (typeof initManualDiagnostics === 'function') {
+                initManualDiagnostics(window.editors);
+            }
         });
     }
 </script>

@@ -10,7 +10,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "monaco-editor": "^0.52.2",
+    "monaco-editor": "^0.47.0",
     "monaco-languageclient": "^0.14.0",
     "normalize-url": "^8.0.1",
     "reconnecting-websocket": "^4.4.0"
