@@ -132,8 +132,7 @@ def run_code(request):
 
     return JsonResponse({"results": results})
 
-
-@user_passes_test(lambda u: u.is_superuser)
+# @user_passes_test(lambda u: u.is_superuser)
 def create_or_edit_questions(request, question_id=None):
     """Create or edit a coding question along with its test cases."""
     question = get_object_or_404(Questions, pk=question_id) if question_id else None
@@ -430,7 +429,7 @@ def execute_java_file(class_name, temp_dir, input_data=None):
 
 
 def register(request):
-    template = 'editor/login_register_e.html'
+    template = 'experimental_app/login_register_e.html'
     login_form = AuthenticationForm()
     context = {'form': login_form}
 

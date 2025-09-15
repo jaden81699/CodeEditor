@@ -187,12 +187,14 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 
 <!-- Monaco Editor -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.41.0/min/vs/loader.js"></script>
+<!-- Monaco Editor Loader locally -->
+<script src="{% static 'monaco/vs/loader.js' %}"></script>
+<script>
+  // Point RequireJS to the local 'vs' folder
+  require.config({paths: { 'vs': '{% static "monaco/vs" %}' }});
+</script>
 <script type="text/javascript">
     document.addEventListener('DOMContentLoaded', function () {
-        require.config({
-            paths: {vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.41.0/min/vs'}
-        });
         require(['vs/editor/editor.main'], function () {
             const userEditor = monaco.editor.create(
                 document.getElementById('userStarterEditor'),

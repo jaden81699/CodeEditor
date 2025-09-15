@@ -131,7 +131,14 @@
                 <div class="tab-pane fade show active" id="login" role="tabpanel" aria-labelledby="login-tab">
                     <form method="POST" action="{% url 'experimental_app:login' %}">
                         {% csrf_token %}
-                        {{ form.non_field_errors }}
+                        <!-- Bootstrap and text for the error message about the username and password -->
+                        {% if form.non_field_errors %}
+                            <div class="alert alert-danger" role="alert">
+                                {% for error in form.non_field_errors %}
+                                    {{ error }}
+                                {% endfor %}
+                            </div>
+                        {% endif %}
                         <div class="mb-3">
                             {{ form.username.label_tag }}
                             {{ form.username|add_class:"form-control bg-dark text-white" }}
