@@ -18,7 +18,7 @@ from editor.forms import QuestionsForm, TestCaseFormSet
 from editor.models import Questions, ParticipantProfile, Submission
 
 
-@login_required
+@login_required(login_url='experimental_app:login')
 def editor(request):
     profile = request.user.participantprofile
     is_exp = (profile.group == ParticipantProfile.EXPERIMENTAL)

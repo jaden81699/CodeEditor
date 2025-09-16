@@ -73,7 +73,7 @@ class ControlLoginView(LoginView):
         return self.success_url
 
 
-@login_required
+@login_required(login_url='control_app:login')
 def editor(request):
     profile = request.user.participantprofile
     is_control = (profile.group == ParticipantProfile.CONTROL)
@@ -102,7 +102,7 @@ def editor(request):
         user=request.user, attempt_no=2, is_correct=True
     ).count()
 
-    return render(request, "control_app/editor.html", {
+    resp = render(request, "control_app/editor.html", {
         "questions": questions,
         "is_control": is_control,
         "is_experimental": is_experimental,
@@ -115,6 +115,10 @@ def editor(request):
         "first_score": profile.first_attempt_correct,
         "control_failed": profile.first_attempt_incorrect,
     })
+    resp["Cross-Origin-Opener-Policy"] = "same-origin"
+    resp["Cross-Origin-Embedder-Policy"] = "require-corp"
+
+    return resp
 
 
 @login_required
