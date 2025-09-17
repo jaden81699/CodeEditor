@@ -3,22 +3,19 @@ import os
 import subprocess
 import tempfile
 from django.contrib.auth.decorators import login_required, user_passes_test
-from django.contrib.auth import logout, login
-from django.contrib.auth.forms import UserCreationForm, AuthenticationForm
-from django.contrib.auth.models import User
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse, HttpResponse
-from django.urls import reverse, reverse_lazy
+from django.urls import reverse
 from django.views.decorators.http import require_POST
-from django.utils.functional import cached_property
-from django.contrib.auth.views import LoginView
 
 from CodeEditor import settings
+from decorators import require_pre_assessment_completed
 from editor.forms import QuestionsForm, TestCaseFormSet
 from editor.models import Questions, ParticipantProfile, Submission
 
 
-@login_required(login_url='experimental_app:login')
+@login_required(login_url='control_app:login')
+@require_pre_assessment_completed
 def editor(request):
     profile = request.user.participantprofile
     is_exp = (profile.group == ParticipantProfile.EXPERIMENTAL)
@@ -132,6 +129,7 @@ def run_code(request):
 
     return JsonResponse({"results": results})
 
+
 # @user_passes_test(lambda u: u.is_superuser)
 def create_or_edit_questions(request, question_id=None):
     """Create or edit a coding question along with its test cases."""
@@ -172,7 +170,7 @@ def delete_question(request, question_id):
     return render(request, 'confirm-delete.html', {'question': question})
 
 
-@login_required
+@login_required(login_url='control_app:login')
 def submit_all(request):
     """
     Accepts a JSON payload:
@@ -274,7 +272,7 @@ def submit_all(request):
 
         # some passed → do second-pass on those only
         profile.both_experimental_code_assessments_done = True
-        #print(profile.both_experimental_code_assessments_done)
+        # print(profile.both_experimental_code_assessments_done)
         return JsonResponse({
             "status": "next",
             "next": "second-pass",
@@ -291,7 +289,7 @@ def submit_all(request):
     })
 
 
-@login_required
+@login_required(login_url='control_app:login')
 def post_assessment_questionnaire(request):
     # Guard: only allow after assessment is complete
     # Both control and experimental group will use this views function
@@ -308,93 +306,6 @@ def post_assessment_questionnaire(request):
         f"&group={group_of_user}"
     )
     return redirect(url)
-
-
-# @require_POST
-# def submit_code(request):
-#     """
-#     1️⃣ First pass (attempt_no=1): AI available
-#       - run & record every test
-#       - mark used_ai=True
-#       - set session['second_pass']=True
-#       - return 200 OK (front-end will reload editor for pass 2)
-#     2️⃣ Second pass (attempt_no=2): AI hidden
-#       - run & record every test
-#       - mark used_ai=False
-#       - clear session['second_pass']
-#       - return JSON { redirect: thank_you_url }
-#     """
-#     # pull your form fields
-#     code = request.POST.get("code", "").strip()
-#     qid = request.POST.get("question_id")
-#     attempt_no = int(request.POST.get("attempt_no", "1"))
-#
-#     if not code or not qid:
-#         return JsonResponse({"error": "Missing code or question_id"}, status=400)
-#
-#     # lookup
-#     question = get_object_or_404(Questions, pk=int(qid))
-#     profile = request.user.participantprofile
-#
-#     # compile & run exactly as before...
-#     is_correct = False
-#     try:
-#         with tempfile.TemporaryDirectory() as tmp:
-#             # write & compile Main.java
-#             proc = compile_java_file(code, "Main.java", tmp)
-#             if proc.returncode == 0:
-#                 if question.question_type == "IO":
-#                     is_correct = all(
-#                         execute_java_file("Main", tmp, input_data=tc.test_input).strip()
-#                         == tc.expected_output.strip()
-#                         for tc in question.test_cases.all()
-#                     )
-#                 else:
-#                     # compile & run your TestRunner…
-#                     runner_src = "/path/to/CountPositiveRunner.java"
-#                     dest = os.path.join(tmp, "CountPositiveRunner.java")
-#                     subprocess.run(["cp", runner_src, dest], check=True)
-#                     cr = subprocess.run(
-#                         ["javac", dest], capture_output=True, text=True
-#                     )
-#                     if cr.returncode == 0:
-#                         lines = execute_java_file("CountPositiveRunner", tmp).splitlines()
-#                         actual = next(
-#                             (l.split("Actual:")[1].strip() for l in lines if l.startswith("Actual:")),
-#                             None
-#                         )
-#                         is_correct = (actual == "6")
-#     except Exception:
-#         is_correct = False
-#
-#     # decide AI-usage flag
-#     used_ai = (attempt_no == 1)
-#
-#     # persist
-#     Submission.objects.create(
-#         user=request.user,
-#         question=question,
-#         attempt_no=attempt_no,
-#         used_ai=used_ai,
-#         is_correct=is_correct,
-#     )
-#
-#     # update your profile counters if you like…
-#
-#     # now branch by attempt number
-#     if attempt_no == 1:
-#         # 1️⃣ First pass → mark session for second pass
-#         request.session["second_pass"] = True
-#         request.session.modified = True
-#
-#         # front-end will simply reload editor (no redirect in JSON)
-#         return JsonResponse({"ok": True})
-#
-#     else:
-#         # 2️⃣ Second pass → clear the flag, and send back a redirect
-#         request.session.pop("second_pass", None)
-#         thank_you = reverse("experimental_app:thank_you")
-#         return JsonResponse({"redirect": thank_you})
 
 
 def compile_java_file(code, filename, temp_dir):
@@ -428,55 +339,8 @@ def execute_java_file(class_name, temp_dir, input_data=None):
         return str(e)
 
 
-def register(request):
-    template = 'experimental_app/login_register_e.html'
-    login_form = AuthenticationForm()
-    context = {'form': login_form}
-
-    if request.method == 'POST':
-        pwd1 = request.POST.get('password1', '')
-        pwd2 = request.POST.get('password2', '')
-
-        if not pwd1 or pwd1 != pwd2:
-            context['register_error'] = 'Passwords must match and not be empty.'
-            return render(request, template, context)
-
-        # create user with temp username
-        user = User.objects.create_user(username='temp', password=pwd1)
-        user.username = str(user.id)
-        user.save()
-
-        # Assign them to experimental group (update existing or create new)
-        profile, created = ParticipantProfile.objects.get_or_create(user=user)
-        profile.group = 'E'
-        profile.save()
-
-        # now tell the template to switch to the login tab
-        context['generated_username'] = user.username
-        return render(request, template, context)
-
-    # GET just shows login+register tabs
-    return render(request, template, context)
-
-
 def thank_you(request):
     # clean up
     request.session.pop('experimental_pass', None)
     request.session.pop('experimental_keep_ids', None)
     return render(request, "experimental_app/thank_you.html")
-
-
-def experimental_logout_view(request):
-    """Logout user and redirect to login page."""
-    logout(request)
-    return redirect('experimental_app:login')
-
-
-class ExperimentalLoginView(LoginView):
-    template_name = "experimental_app/login_register_e.html"
-    redirect_authenticated_user = True
-    # once you’re logged in, go straight to your editor
-    success_url = reverse_lazy("pre-assessment")
-
-    def get_success_url(self):
-        return self.success_url

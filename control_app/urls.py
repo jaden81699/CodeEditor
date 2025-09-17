@@ -1,13 +1,10 @@
 from django.urls import path
 from control_app import views
-from control_app.views import run_code, submit_all, ControlLoginView
+from control_app.views import run_code, submit_all
 
 app_name = "control_app"
 
 urlpatterns = [
-    path("login/", ControlLoginView.as_view(), name="login"),
-    path('register/', views.register_control, name='register'),
-    path('logout/', views.control_logout_view, name='logout'),
     path("thank-you/", views.thank_you, name="thank-you"),
     path('run-code/', run_code, name='run-code'),
     path('editor/', views.editor, name='editor'),

@@ -54,6 +54,12 @@ class ParticipantProfile(models.Model):
     both_experimental_code_assessments_done = models.BooleanField(default=False)
     both_control_code_assessments_done = models.BooleanField(default=False)
 
+    pre_assessment_completed = models.BooleanField(default=False)
+    pre_assessment_response_id = models.CharField(max_length=64, blank=True)
+    pre_assessment_token = models.CharField(max_length=64, blank=True)
+    pre_assessment_completed_at = models.DateTimeField(null=True, blank=True)
+    randomized_at = models.DateTimeField(null=True, blank=True)
+
 
 class Submission(models.Model):
     """
@@ -66,3 +72,18 @@ class Submission(models.Model):
     used_ai = models.BooleanField()  # True if Gemini pane allowed
     is_correct = models.BooleanField()
     timestamp = models.DateTimeField(auto_now_add=True)
+
+
+class EnrollmentCap(models.Model):
+    """Global caps (set once in admin or migration)"""
+    target_C = models.PositiveIntegerField(default=130)
+    target_E = models.PositiveIntegerField(default=130)
+
+
+class RandomizationBlock(models.Model):
+    """
+    Used for the remaining labels for the current permuted block.
+    """
+    sequence = models.JSONField(default=list)  # remaining labels in current block, e.g. ["C","E","E","C"]
+    block_size = models.PositiveIntegerField(default=6)  # even number: 4, 6, 8...
+    updated_at = models.DateTimeField(auto_now=True)

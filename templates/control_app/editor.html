@@ -114,11 +114,8 @@
 
             <div class="d-flex align-items-center">
                 {# in editor.html, where you render your logout button #}
-                {% if request.user.participantprofile.group == 'C' %}
-                    <a href="{% url 'control_app:logout' %}" class="btn btn-danger btn-sm mx-2">Logout</a>
-                {% else %}
-                    <a href="{% url 'experimental_app:logout' %}" class="btn btn-danger btn-sm mx-2">Logout</a>
-                {% endif %}
+                <a href="{% url 'logout' %}" class="btn btn-danger btn-sm mx-2">Logout</a>
+
                 <!-- Submit Code Button: normal submission that reloads the page -->
                 <button
                         id="submit-all"

@@ -1,71 +1,84 @@
 import os
 import subprocess
 import tempfile
+import secrets
+from datetime import datetime
+from sqlite3 import IntegrityError
 
 from django.contrib.auth.decorators import login_required
-from django.contrib.auth.forms import UserCreationForm, AuthenticationForm
+from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.models import User
+from django.core.signing import TimestampSigner, SignatureExpired, BadSignature
+from django.db import transaction
 from django.http import JsonResponse, HttpResponse, HttpResponseForbidden, HttpResponseBadRequest
 from django.shortcuts import render, redirect, get_object_or_404
-from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth import logout, get_user_model
 from django.urls import reverse_lazy, reverse
 from django.contrib.auth.views import LoginView
 
 from CodeEditor import settings
+from decorators import require_pre_assessment_completed
 from editor.models import ParticipantProfile, Questions, Submission
-from editor.forms import QuestionsForm, TestCaseFormSet
-from editor.views import editor as core_editor, compile_java_file, execute_java_file
+from editor.views import compile_java_file, execute_java_file
+
+signer = TimestampSigner(salt="pre-survey-v1")
+
+User = get_user_model()
 
 
 def register_control(request):
     """
-    A single page that offers both Login and Register tabs.
-    We auto‐generate the username as the new User.pk.
+    Do NOT assign study group here. Group is assigned after pre-survey completes.
     """
-    # Prepare an empty login form for either GET or POST
-    login_form = AuthenticationForm()
+    login_form = AuthenticationForm(request)
 
     if request.method == "POST":
-        # Grab the two password fields directly
         pwd1 = request.POST.get("password1")
         pwd2 = request.POST.get("password2")
 
-        # If passwords are empty or don’t match, redisplay Register tab with error
         if not pwd1 or pwd1 != pwd2:
-            return render(request, "control_app/login_register_c.html", {
+            return render(request, "login_register.html", {
                 "form": login_form,
                 "register_error": "Passwords must match and not be empty.",
-                # no generated_username → stays on Register tab
             })
 
-        # 1) Create a temporary user, so we get an auto PK
-        temp_user = User.objects.create_user(username="temp", password=pwd1)
+        try:
+            with transaction.atomic():
+                # 1) Create with a unique placeholder to avoid 'temp' collisions
+                placeholder = f"_tmp_{secrets.token_urlsafe(8)}"
+                user = User.objects.create_user(username=placeholder, password=pwd1)
 
-        # 2) Take its PK, convert to string, overwrite username
-        new_username = str(temp_user.id)
-        temp_user.username = new_username
-        temp_user.save()
+                # 2) Rename to the numeric PK string (unique by definition)
+                user.username = str(user.pk)
+                user.save(update_fields=["username"])
 
-        # 3) Assign them to Control group
-        profile = temp_user.participantprofile
-        profile.group = "C"
-        profile.save()
+                # 3) Ensure a ParticipantProfile exists (if not created via signal)
+                # from .models import ParticipantProfile
+                # ParticipantProfile.objects.get_or_create(user=user)
 
-        # 4) Re‐render the SAME page, but now show the success banner + Login tab
-        return render(request, "control_app/login_register_c.html", {
-            "generated_username": new_username,
-            "form": AuthenticationForm(),  # fresh login form
-            # we can show a fresh placeholder register form or leave it out
+        except IntegrityError:
+            # Extremely rare; try again with a new placeholder
+            return render(request, "login_register.html", {
+                "form": login_form,
+                "register_error": "Please try again.",
+            })
+
+        # after user is created and renamed:
+        # login(request, user)
+        # return redirect("control_app:pre_assessment_questionnaire")
+
+        # 4) Show success banner + keep them on the same page to log in
+        return render(request, "login_register.html", {
+            "generated_username": user.username,
+            "form": AuthenticationForm(request),  # fresh login form
         })
 
-    # GET: just render both blank forms
-    return render(request, "control_app/login_register_c.html", {
-        "form": login_form,
-    })
+    # GET
+    return render(request, "login_register.html", {"form": login_form})
 
 
 class ControlLoginView(LoginView):
-    template_name = "control_app/login_register_c.html"
+    template_name = "login_register.html"
     redirect_authenticated_user = True
     success_url = reverse_lazy("control_app:editor")
 
@@ -73,7 +86,8 @@ class ControlLoginView(LoginView):
         return self.success_url
 
 
-@login_required(login_url='control_app:login')
+@login_required(login_url='login')
+@require_pre_assessment_completed
 def editor(request):
     profile = request.user.participantprofile
     is_control = (profile.group == ParticipantProfile.CONTROL)
@@ -225,98 +239,6 @@ def submit_all(request):
     # non-control fallback
     return HttpResponse("An unexpected error has occurred")
 
-
-# @login_required
-# def submit_code(request):
-#     # 1) Pull form data
-#     code = request.POST.get("code", "").strip()
-#     qid = request.POST.get("question_id")
-#     attempt_no = int(request.POST.get("attempt_no", "1"))
-#
-#     if not code or not qid:
-#         return redirect("control_app:editor")
-#
-#     # 2) Lookup objects & profile
-#     question = get_object_or_404(Questions, pk=int(qid))
-#     profile = request.user.participantprofile
-#     is_ctrl = (profile.group == ParticipantProfile.CONTROL)
-#
-#     # 3) Compile & run tests (your existing logic)
-#     is_correct = False
-#     used_ai = False
-#     try:
-#         with tempfile.TemporaryDirectory() as tmp:
-#             cpp = compile_java_file(code, "Main.java", tmp)
-#             if cpp.returncode == 0:
-#                 if question.question_type == "IO":
-#                     is_correct = all(
-#                         execute_java_file("Main", tmp, input_data=tc.test_input).strip()
-#                         == tc.expected_output.strip()
-#                         for tc in question.test_cases.all()
-#                     )
-#                 else:
-#                     # Unit test runner
-#                     runner_src = "/Users/jaden/PycharmProjects/CodeEditor/java/CountPositiveRunner.java"
-#                     dest = os.path.join(tmp, "CountPositiveRunner.java")
-#                     subprocess.run(["cp", runner_src, dest], check=True)
-#                     cr = subprocess.run(["javac", dest], capture_output=True, text=True)
-#                     if cr.returncode == 0:
-#                         lines = execute_java_file("CountPositiveRunner", tmp).splitlines()
-#                         actual = next((l.split("Actual:")[1].strip()
-#                                        for l in lines if l.startswith("Actual:")), None)
-#                         is_correct = (actual == "6")
-#     except Exception:
-#         is_correct = False
-#
-#     # 4) Did they use AI?
-#
-#     if is_ctrl and attempt_no == 2:
-#         used_ai = True
-#
-#     # 5) Record the submission
-#     Submission.objects.create(
-#         user=request.user,
-#         question=question,
-#         attempt_no=attempt_no,
-#         used_ai=used_ai,
-#         is_correct=is_correct
-#     )
-#
-#     # 6) Update profile counters
-#     if attempt_no == 1:
-#         if is_correct:
-#             profile.first_attempt_correct += 1
-#         else:
-#             profile.first_attempt_incorrect += 1
-#     profile.save()
-#
-#     # 7) Control-group two-pass logic
-#     if is_ctrl:
-#         sess = request.session
-#         control_pass = sess.get("control_pass", 1)
-#         wrong_questions = sess.get("redo_questions", [])
-#
-#         if control_pass == 1:
-#             # first pass → collect any wrongs
-#             if not is_correct:
-#                 wrong_questions.append(question.id)
-#             sess["redo_questions"] = wrong_questions
-#             sess["control_pass"] = 2
-#             sess.modified = True
-#
-#             # if they got all three correct → thank you
-#             if len(wrong_questions) == 0:
-#                 return redirect("control_app:thank_you")
-#             # otherwise back to editor for second try
-#             return redirect(reverse("control_app:editor"))
-#
-#         # second pass always goes to thank you
-#         return redirect("control_app:thank_you")
-#
-#     # 9) Default: next question
-#     return redirect("control_app:editor")
-
-
 @login_required
 def run_code(request):
     """
@@ -405,41 +327,76 @@ def run_code(request):
 
 @login_required
 def pre_assessment_questionnaire(request):
-    group_of_user = request.user.participantprofile.group
+    profile = request.user.participantprofile
+    token = secrets.token_urlsafe(16)
+    profile.pre_assessment_token = token
+    profile.save(update_fields=["pre_assessment_token"])
+
     qualtrics_link = settings.QUALTRICS_PREASSESSMENT_LINK  # e.g. "https://yourdcid.qualtrics.com"
-    print(qualtrics_link)
-    # Pass identifiers you want to capture as Embedded Data in Qualtrics
-    url = (
-        f"{qualtrics_link}"
-        f"?uid={request.user.pk}"
-        f"&group={group_of_user}"
-    )
-    return redirect(url)
+    state = signer.sign(token)  # Put this on the Qualtrics link
+    return redirect(f"{qualtrics_link}?uid={request.user.id}&state={state}")
 
 
 @login_required
-def pre_survey_complete(request):
-    # Read what Qualtrics sends back
-    q_uid = request.GET.get("uid")
-    response_id = request.GET.get("responseId")  # useful to store
+@transaction.atomic
+def pre_assessment_complete(request):
     user = request.user
-    profile = user.participantprofile
+    profile = (user.participantprofile.__class__.objects
+               .select_for_update().get(pk=user.participantprofile.pk))
 
-    # Basic safety: the returning uid must match the logged-in user
-    if q_uid and str(user.pk) != str(q_uid):
+    # If already completed, be idempotent: just go to the editor for their group.
+    if profile.pre_assessment_completed:
+        if profile.group == "C":
+            return redirect("control_app:editor")
+        if profile.group == "E":
+            return redirect("experimental_app:editor")
+        # If no group yet, assign now and continue.
+
+    # --- 1) Read and verify inputs ---
+    state = request.GET.get("state")
+    response_id = request.GET.get("responseId")  # optional but useful
+    q_uid = request.GET.get("uid")  # optional cross-check
+
+    if not state:
+        return HttpResponseBadRequest("Missing state")
+
+    # Require that Qualtrics returned within (e.g.) 2 hours
+    try:
+        token = signer.unsign(state, max_age=7200)  # seconds
+    except SignatureExpired:
+        return HttpResponseForbidden("State expired")
+    except BadSignature:
+        return HttpResponseForbidden("Invalid state")
+
+    # Token must match what we issued to this logged-in user
+    if token != (profile.pre_assessment_token or ""):
+        return HttpResponseForbidden("Token mismatch")
+
+    # Optional: uid mismatch warning (doesn't control which profile we write)
+    if q_uid and str(q_uid) != str(user.pk):
         return HttpResponseForbidden("UID mismatch")
 
-    # Mark completion and store the response id
-    profile.pre_survey_done = True
-    profile.pre_survey_response_id = response_id
-    profile.save()
+    # --- 2) Mark completion & clear token ---
+    profile.pre_assessment_completed = True
+    profile.pre_assessment_response_id = response_id or ""
+    profile.pre_assessment_token = ""  # one-time use
+    profile.pre_assessment_completed_at = datetime.now()  # add this field if you like
+    profile.save(update_fields=[
+        "pre_assessment_completed", "pre_assessment_response_id",
+        "pre_assessment_token", "pre_assessment_completed_at"
+    ])
 
-    # Decide next step using your server truth
-    group = profile.group
-    if group == "C":
-        return redirect("control_app:editor")  # e.g., control app landing
-    elif group == "E":
-        return redirect("experimental_app:editor")  # e.g., experimental app landing
+    # --- 3) Assign group AFTER verified completion ---
+    if not profile.group:
+        from randomize_block_permutation import assign_group
+        assign_group(user)  # respects your 130/130 caps
+        profile.refresh_from_db(fields=["group"])
+
+    # --- 4) Redirect to the correct editor ---
+    if profile.group == "C":
+        return redirect("control_app:editor")
+    if profile.group == "E":
+        return redirect("experimental_app:editor")
     return HttpResponseBadRequest("Couldn't find your group")
 
 
@@ -448,7 +405,7 @@ def thank_you(request):
 
 
 class ControlLoginView(LoginView):
-    template_name = "control_app/login_register_c.html"
+    template_name = "login_register.html"
     redirect_authenticated_user = True
     success_url = reverse_lazy("pre-assessment")
 
@@ -456,7 +413,7 @@ class ControlLoginView(LoginView):
         return self.success_url
 
 
-def control_logout_view(request):
+def logout_view(request):
     """Logout user and redirect to login page."""
     logout(request)
-    return redirect('control_app:login')
+    return redirect('login')
