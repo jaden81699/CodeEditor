@@ -73,6 +73,32 @@
         .flex-1 {
             flex: 1 1 auto;
         }
+
+        /* Infinite pulse for the AI Tool pill (nav-link button) */
+        #pills-ai-tool-tab.ai-pulse {
+            box-shadow: 0 0 0 0 rgba(13, 110, 253, .55);
+            animation: ai-pulse 1.4s ease-out infinite;
+        }
+
+        @keyframes ai-pulse {
+            0% {
+                box-shadow: 0 0 0 0 rgba(13, 110, 253, .55);
+            }
+            70% {
+                box-shadow: 0 0 0 .85rem rgba(13, 110, 253, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(13, 110, 253, 0);
+            }
+        }
+
+        /* Accessibility: respect reduced motion */
+        @media (prefers-reduced-motion: reduce) {
+            #pills-ai-tool-tab.ai-pulse {
+                animation: none;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -212,6 +238,68 @@
         </div>
     </div>
 </div>
+
+<!-- Modal that should appear on every page load -->
+<div class="modal fade" id="aiHelpModal" tabindex="-1" aria-labelledby="aiHelpTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content bg-dark text-white border border-info">
+            <div class="modal-header">
+                <h5 class="modal-title" id="aiHelpTitle">AI assistance available</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"
+                        aria-label="Close"></button>
+            </div>
+            <div class="modal-body small">
+                You may use the <strong>AI Tool</strong> on this attempt. Keep questions targeted; don’t paste full
+                solutions.
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline-light" data-bs-dismiss="modal">Got it</button>
+                <button class="btn btn-primary" data-bs-dismiss="modal" data-bs-toggle="pill"
+                        data-bs-target="#pills-ai-tool">Open AI Tool
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if show_ai %}
+    <!-- Toast that should show each load (dismissible) -->
+    <div class="position-fixed bottom-0 end-0 p-3" style="z-index: 1100;">
+        <div id="aiToast" class="toast text-bg-info border-0" role="status" aria-live="polite" aria-atomic="true">
+            <div class="d-flex">
+                <div class="toast-body">AI help is available on this attempt.</div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"
+                        aria-label="Close"></button>
+            </div>
+        </div>
+    </div>
+{% endif %}
+
+<!-- No-AI modal: show when AI is NOT allowed for this attempt -->
+<div class="modal fade" id="noAIModal" tabindex="-1" aria-labelledby="noAITitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content bg-dark text-white border border-warning">
+            <div class="modal-header">
+                <h5 class="modal-title" id="noAITitle">AI assistance is disabled</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"
+                        aria-label="Close"></button>
+            </div>
+            <div class="modal-body small">
+                <ul class="mb-0">
+                    <li>For this attempt, you must solve the problems <strong>without</strong> AI.</li>
+                    <li>Focus on reasoning and code quality. You may get access to AI on a later attempt.</li>
+                </ul>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline-light" data-bs-dismiss="modal">OK</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+<!-- Optional: tiny SR-only hint referenced by aria-describedby -->
+<span id="ai-available-desc" class="visually-hidden">AI assistance is available on this attempt.</span>
 
 
 <!-- Prism CSS and JS for code highlighting in AI responses -->
@@ -551,6 +639,79 @@
         let chatBody = document.getElementById(containerId);
         chatBody.scrollTop = chatBody.scrollHeight;
     }
+</script>
+
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        // Server decides if AI is allowed on this attempt
+        const aiEnabled = {{ show_ai|yesno:"true,false" }};
+        const aiTabBtn = document.getElementById('pills-ai-tool-tab');
+        const aiTabItem = aiTabBtn ? aiTabBtn.closest('.nav-item') : null;
+        const aiPane = document.getElementById('pills-ai-tool');
+        const compTabBtn = document.getElementById('pills-compiler-tab');
+        const compPane = document.getElementById('pills-compiler');
+
+        if (!aiEnabled) {
+            // 1) Hide/disable the AI tab so it can't be opened
+            if (aiTabItem) aiTabItem.classList.add('d-none');
+            if (aiPane) {
+                aiPane.classList.remove('show', 'active');
+                aiPane.setAttribute('aria-hidden', 'true');
+            }
+
+            // 2) Ensure the Compiler tab is active
+            if (compTabBtn) bootstrap.Tab.getOrCreateInstance(compTabBtn).show();
+
+            // 3) Show the "No AI" modal on every load
+            const noAiEl = document.getElementById('noAIModal');
+            if (noAiEl) bootstrap.Modal.getOrCreateInstance(noAiEl, {backdrop: true, keyboard: true}).show();
+
+            // 4) Defensive: remove any pulse class if your CSS/JS adds it elsewhere
+            aiTabBtn?.classList.remove('ai-pulse');
+            aiTabBtn?.removeAttribute('title');
+            aiTabBtn?.removeAttribute('aria-describedby');
+        } else {
+            // AI is allowed — your existing “pulse + toast + modal” logic runs here.
+            // Set this from your template context; true only when AI is allowed
+            const aiTab = document.getElementById('pills-ai-tool-tab');
+            const aiPane = document.getElementById('pills-ai-tool'); // the tab pane
+            const toastEl = document.getElementById('aiToast');
+            const modalEl = document.getElementById('aiHelpModal');
+
+            // 1) Start infinite pulse every load
+            function startPulse() {
+                aiTab.classList.add('ai-pulse');
+                aiTab.setAttribute('aria-describedby', 'ai-available-desc');
+                aiTab.title = 'AI help is available — click to open';
+            }
+
+            // Stop pulse once user opens the AI tab (for this page view only)
+            function stopPulse() {
+                aiTab.classList.remove('ai-pulse');
+                aiTab.removeAttribute('aria-describedby');
+                aiTab.removeAttribute('title');
+            }
+
+            startPulse();
+
+            // Stop when the AI tab becomes active or is clicked
+            aiTab.addEventListener('shown.bs.tab', stopPulse);
+            aiTab.addEventListener('click', stopPulse);
+
+            // 2) Show toast on every load (user can dismiss; no persistence)
+            if (toastEl) {
+                const t = bootstrap.Toast.getOrCreateInstance(toastEl, {autohide: false});
+                t.show();
+            }
+
+            // 3) Show modal on every load (user can dismiss; no persistence)
+            if (modalEl) {
+                const m = new bootstrap.Modal(modalEl, {backdrop: true, keyboard: true});
+                m.show();
+            }
+        }
+    });
+
 </script>
 
 

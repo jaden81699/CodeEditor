@@ -28,6 +28,7 @@ urlpatterns = [
     path("", ControlLoginView.as_view(), name="login"),
     path('register/', control_app.views.register_control, name='register'),
     path('logout/', control_app.views.logout_view, name='logout'),
+    path("thank-you/", control_app.views.thank_you, name="thank-you"),
     path('e/', include('editor.urls'), ),
     path('c/', include('control_app.urls'), ),
     path('questions/', create_or_edit_questions, name='create-or-edit-questions'),
@@ -35,5 +36,6 @@ urlpatterns = [
     path('questions/delete/<int:question_id>/', delete_question, name='delete-question'),
     path("pre-assessment/", control_views.pre_assessment_questionnaire, name="pre-assessment"),
     path("pre-assessment-complete/", control_views.pre_assessment_complete, name="pre-survey-complete"),
-    path("post-assessment/", experimental_views.post_assessment_questionnaire, name="post-assessment"),
+    path("post-assessment/", control_app.views.post_assessment_questionnaire, name="post-assessment"),
+    path("post-assessment-complete/", control_app.views.post_assessment_complete, name="post-assessment-complete"),
 ]

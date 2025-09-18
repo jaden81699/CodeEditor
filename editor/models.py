@@ -51,14 +51,19 @@ class ParticipantProfile(models.Model):
     first_attempt_incorrect = models.PositiveSmallIntegerField(default=0)
     # second‑round counters (only meaningful for the experimental group)
     second_attempt_correct = models.PositiveSmallIntegerField(default=0)
-    both_experimental_code_assessments_done = models.BooleanField(default=False)
-    both_control_code_assessments_done = models.BooleanField(default=False)
+    both_ai_and_non_ai_portion_of_code_assessment_completed = models.BooleanField(
+        default=False)  # set this when done with coding
 
     pre_assessment_completed = models.BooleanField(default=False)
     pre_assessment_response_id = models.CharField(max_length=64, blank=True)
     pre_assessment_token = models.CharField(max_length=64, blank=True)
     pre_assessment_completed_at = models.DateTimeField(null=True, blank=True)
     randomized_at = models.DateTimeField(null=True, blank=True)
+
+    post_assessment_completed = models.BooleanField(default=False)
+    post_assessment_token = models.CharField(max_length=64, blank=True)
+    post_assessment_response_id = models.CharField(max_length=64, blank=True)
+    post_assessment_completed_at = models.DateTimeField(null=True, blank=True)
 
 
 class Submission(models.Model):

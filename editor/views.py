@@ -14,7 +14,7 @@ from editor.forms import QuestionsForm, TestCaseFormSet
 from editor.models import Questions, ParticipantProfile, Submission
 
 
-@login_required(login_url='control_app:login')
+@login_required(login_url='login')
 @require_pre_assessment_completed
 def editor(request):
     profile = request.user.participantprofile
@@ -262,7 +262,7 @@ def submit_all(request):
             print("[DEBUG] No passed_ids → redirecting to thank-you")
             return JsonResponse({
                 "status": "redirect",
-                "redirect_url": reverse("experimental_app:thank-you")
+                "redirect_url": reverse("thank-you")
             })
 
         # ★ store them in session for the second pass ★
@@ -271,8 +271,6 @@ def submit_all(request):
         request.session.modified = True
 
         # some passed → do second-pass on those only
-        profile.both_experimental_code_assessments_done = True
-        # print(profile.both_experimental_code_assessments_done)
         return JsonResponse({
             "status": "next",
             "next": "second-pass",
@@ -280,32 +278,13 @@ def submit_all(request):
             "redirect_url": reverse("experimental_app:editor")
         })
 
-    # — all other cases (second pass or non-experimental)
-    profile.both_experimental_code_assessments_done = True
+    # — Done with second pass
+    profile.both_ai_and_non_ai_portion_of_code_assessment_completed = True
     profile.save()
     return JsonResponse({
         "status": "redirect",
         "redirect_url": reverse("post-assessment")
     })
-
-
-@login_required(login_url='control_app:login')
-def post_assessment_questionnaire(request):
-    # Guard: only allow after assessment is complete
-    # Both control and experimental group will use this views function
-    group_of_user = request.user.participantprofile.group
-    profile = request.user.participantprofile
-    if not (profile.both_experimental_code_assessments_done | profile.both_control_code_assessments_done):
-        return HttpResponse("could not go through")  # or wherever your assessment lives
-
-    qualtrics_link = settings.QUALTRICS_POSTASSESSMENT_LINK  # e.g. "https://yourdcid.qualtrics.com"
-    # Pass identifiers you want to capture as Embedded Data in Qualtrics
-    url = (
-        f"{qualtrics_link}"
-        f"?uid={request.user.pk}"
-        f"&group={group_of_user}"
-    )
-    return redirect(url)
 
 
 def compile_java_file(code, filename, temp_dir):
@@ -337,10 +316,3 @@ def execute_java_file(class_name, temp_dir, input_data=None):
         return run_process.stdout.strip() or run_process.stderr.strip()
     except Exception as e:
         return str(e)
-
-
-def thank_you(request):
-    # clean up
-    request.session.pop('experimental_pass', None)
-    request.session.pop('experimental_keep_ids', None)
-    return render(request, "experimental_app/thank_you.html")

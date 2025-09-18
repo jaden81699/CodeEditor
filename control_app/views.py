@@ -15,9 +15,10 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import logout, get_user_model
 from django.urls import reverse_lazy, reverse
 from django.contrib.auth.views import LoginView
+from django.views.decorators.cache import never_cache, cache_control
 
 from CodeEditor import settings
-from decorators import require_pre_assessment_completed
+from decorators import require_pre_assessment_completed, require_ready_for_post_assessment_questionnaire
 from editor.models import ParticipantProfile, Questions, Submission
 from editor.views import compile_java_file, execute_java_file
 
@@ -88,6 +89,8 @@ class ControlLoginView(LoginView):
 
 @login_required(login_url='login')
 @require_pre_assessment_completed
+@never_cache
+@cache_control(no_store=True, no_cache=True, must_revalidate=True, max_age=0, private=True)
 def editor(request):
     profile = request.user.participantprofile
     is_control = (profile.group == ParticipantProfile.CONTROL)
@@ -218,7 +221,7 @@ def submit_all(request):
                 # everyone correct → thank you
                 return JsonResponse({
                     "next": "thank-you",
-                    "redirect_url": reverse("control_app:thank-you")
+                    "redirect_url": reverse("thank-you")
                 })
             else:
                 # some wrong → go back to editor for only wrong ones
@@ -228,9 +231,8 @@ def submit_all(request):
                 })
 
         # pass 2 always goes to post assessment
-        profile.both_control_code_assessments_done = True
+        profile.both_ai_and_non_ai_portion_of_code_assessment_completed = True
         profile.save()
-        # print(profile.both_control_code_assessments_done)
         return JsonResponse({
             "status": "redirect",
             "redirect_url": reverse("post-assessment")
@@ -238,6 +240,7 @@ def submit_all(request):
 
     # non-control fallback
     return HttpResponse("An unexpected error has occurred")
+
 
 @login_required
 def run_code(request):
@@ -400,8 +403,79 @@ def pre_assessment_complete(request):
     return HttpResponseBadRequest("Couldn't find your group")
 
 
+@require_ready_for_post_assessment_questionnaire
+def post_assessment_questionnaire(request):
+    profile = request.user.participantprofile
+    token = secrets.token_urlsafe(16)
+    profile.post_assessment_token = token
+    profile.save(update_fields=["post_assessment_token"])
+
+    state = signer.sign(token)
+    qualtrics_link = settings.QUALTRICS_POSTASSESSMENT_LINK  # Qualtrics post-assessment URL
+
+    # Send uid and state, so you can pipe them back on redirect
+    return redirect(f"{qualtrics_link}?uid={request.user.id}&state={state}")
+
+
+@login_required
+@transaction.atomic
+def post_assessment_complete(request):
+    profile = (request.user.participantprofile.__class__.objects
+               .select_for_update()
+               .get(pk=request.user.participantprofile.pk))
+
+    # Must still meet prerequisites (defense-in-depth)
+    if not profile.pre_assessment_completed or not profile.both_ai_and_non_ai_portion_of_code_assessment_completed:
+        return HttpResponseForbidden("Prerequisites not met")
+
+    # Already done? be idempotent
+    if profile.post_assessment_completed:
+        # send to your final screen / thanks
+        return redirect("thank_you")
+
+    state = request.GET.get("state")
+    response_id = request.GET.get("responseId") or request.GET.get("Q_R")  # Qualtrics sometimes uses Q_R
+    q_uid = request.GET.get("uid")
+
+    if not state:
+        return HttpResponseBadRequest("Missing state")
+
+    try:
+        token = signer.unsign(state, max_age=7200)  # 2 hours
+    except SignatureExpired:
+        return HttpResponseForbidden("State expired")
+    except BadSignature:
+        return HttpResponseForbidden("Invalid state")
+
+    if token != (profile.post_assessment_token or ""):
+        return HttpResponseForbidden("Token mismatch")
+
+    # (Optional) sanity check – never use q_uid to choose the account
+    if q_uid and str(q_uid) != str(request.user.pk):
+        return HttpResponseForbidden("UID mismatch")
+
+    # Mark complete and clear token
+    profile.post_assessment_completed = True
+    profile.post_assessment_response_id = response_id or ""
+    profile.post_assessment_token = ""
+    profile.post_assessment_completed_at = datetime.now()
+    profile.save(update_fields=[
+        "post_assessment_completed",
+        "post_assessment_response_id",
+        "post_assessment_token",
+        "post_assessment_completed_at",
+    ])
+
+    # in post_assessment_complete (after verifying state/token and marking completion):
+    request.user.is_active = False
+    request.user.save(update_fields=["is_active"])
+    logout(request)  # end the current session
+
+    return redirect("thank-you")  # or wherever you end
+
+
 def thank_you(request):
-    return render(request, "control_app/thank_you.html")
+    return render(request, "thank_you.html")
 
 
 class ControlLoginView(LoginView):
