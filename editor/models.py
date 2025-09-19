@@ -60,6 +60,7 @@ class ParticipantProfile(models.Model):
     pre_assessment_completed_at = models.DateTimeField(null=True, blank=True)
     randomized_at = models.DateTimeField(null=True, blank=True)
 
+    post_assessment_started = models.BooleanField(default=False)
     post_assessment_completed = models.BooleanField(default=False)
     post_assessment_token = models.CharField(max_length=64, blank=True)
     post_assessment_response_id = models.CharField(max_length=64, blank=True)
@@ -92,3 +93,33 @@ class RandomizationBlock(models.Model):
     sequence = models.JSONField(default=list)  # remaining labels in current block, e.g. ["C","E","E","C"]
     block_size = models.PositiveIntegerField(default=6)  # even number: 4, 6, 8...
     updated_at = models.DateTimeField(auto_now=True)
+
+
+class AITelemetry(models.Model):
+    EVENT_CHOICES = [
+        ("ai_tab_open", "AI tab opened"),
+        ("ai_prompt", "AI prompt sent"),
+        ("ai_reply", "AI reply shown"),
+        ("paste", "Paste into editor"),
+        ("vis_hide", "Page hidden"),
+        ("vis_show", "Page visible"),
+    ]
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    attempt_no = models.IntegerField(null=True, blank=True)
+    question_id = models.IntegerField(null=True, blank=True)
+    event = models.CharField(max_length=32, choices=EVENT_CHOICES)
+    model_id = models.CharField(max_length=64, blank=True)
+    prompt_chars = models.IntegerField(null=True, blank=True)
+    reply_chars = models.IntegerField(null=True, blank=True)
+    paste_chars = models.IntegerField(null=True, blank=True)
+    prompt_hash = models.CharField(max_length=64, blank=True)  # SHA-256 hex of prompt (optional)
+    reply_hash = models.CharField(max_length=64, blank=True)  # SHA-256 hex of reply (optional)
+    ua = models.TextField(blank=True)  # user-agent (optional)
+    client_ts = models.DateTimeField(null=True, blank=True)  # client timestamp (optional)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "attempt_no", "event"]),
+            models.Index(fields=["created_at"]),
+        ]

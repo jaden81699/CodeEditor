@@ -3,6 +3,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="ai-telemetry-url" content="{% url 'ai_telemetry' %}">
+    <script>window.aiContext = {attemptNo: {{ attempt_no|default:1 }}, questionId: null};</script>
     <title>AI-Assisted Programming</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <!-- Bootstrap CSS -->
@@ -302,7 +304,7 @@
         crossorigin="anonymous"></script>
 <!-- WebLLM Code -->
 <script type="module">
-    import {supported, initLLM, askAI} from "{% static 'js/webllm-client.js' %}?v=2";
+    import {supported, initLLM, askAI} from "{% static 'js/webllm-client.js' %}?v=3";
 
     // Expose to non-module scripts
     window.webllm = {supported, initLLM, askAI};
@@ -685,7 +687,27 @@
         }
     });
 </script>
+<script>
+    function postAI(event, payload = {}) {
+        const csrf = document.querySelector('[name=csrfmiddlewaretoken]')?.value;
+        return fetch("{% url 'ai_telemetry' %}", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {"Content-Type": "application/json", "X-CSRFToken": csrf},
+            body: JSON.stringify({event, ...payload})
+        }).catch(() => {
+        });
+    }
 
-
+    document.addEventListener('DOMContentLoaded', () => {
+        const aiTabBtn = document.getElementById('pills-ai-tool-tab');
+        aiTabBtn?.addEventListener('shown.bs.tab', () => {
+            postAI("ai_tab_open", {
+                attempt_no: {{ attempt_no|default:1 }},
+                model_id: "Llama-3.2-3B-Instruct-q4f32_1-MLC"
+            });
+        });
+    });
+</script>
 </body>
 </html>

@@ -5,6 +5,43 @@ if (navigator.storage?.persist) navigator.storage.persist().catch(() => {
 let engine = null;                 // holds the WebLLM engine instance after initialization
 let inflight = null;               // tracks a currently-running generation Promise to serialize requests
 
+// === Telemetry helpers ===
+function getCSRFCookie() {
+    const m = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+    return m ? decodeURIComponent(m[1]) : null;
+}
+
+function getCSRFToken() {
+    return document.querySelector('[name=csrfmiddlewaretoken]')?.value || getCSRFCookie() || "";
+}
+
+const TELEMETRY_URL =
+    document.querySelector('meta[name="ai-telemetry-url"]')?.content || "/ai/telemetry/";
+
+const TELEMETRY_ON = true; // flip to false to disable quickly
+
+async function postTelemetry(event, payload = {}) {
+    if (!TELEMETRY_ON) return;
+    try {
+        const csrf = getCSRFToken();
+        const resp = await fetch(TELEMETRY_URL, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {
+                "Content-Type": "application/json",
+                ...(csrf ? {"X-CSRFToken": csrf} : {})
+            },
+            body: JSON.stringify({event, ...payload})
+        });
+        if (!resp.ok) {
+            const txt = await resp.text().catch(() => "");
+            console.warn("[ai_telemetry] HTTP", resp.status, txt);
+        }
+    } catch (e) {
+        console.error("[ai_telemetry] network error", e);
+    }
+}
+
 const DEFAULT_MODEL = "Llama-3.2-3B-Instruct-q4f32_1-MLC"; // default model id to load in the browser
 const DEFAULT_GEN = {max_tokens: 1000, temperature: 0.2}; // default generation parameters for responses
 
@@ -31,6 +68,17 @@ export async function askAI(messages, gen = {}) {
     // Serialize calls: if another request is running, wait for it to finish
     if (inflight) await inflight;
 
+    // --- NEW: capture context and user prompt length (no content) ---
+    const ctx = (window.aiContext || {});
+    const userMsg = [...(messages || [])].reverse().find(m => m.role === "user")?.content || "";
+    postTelemetry("ai_prompt", {
+        attempt_no: ctx.attemptNo ?? null,
+        question_id: ctx.questionId ?? null,
+        model_id: DEFAULT_MODEL,                 // or engine?.getModelId?.()
+        prompt_chars: userMsg.length,
+        client_ts: new Date().toISOString()
+    });
+
     // Merge default generation settings with any overrides from the caller
     const params = {...DEFAULT_GEN, ...gen, messages};
     // Kick off a completion request; the API is OpenAI-like
@@ -39,7 +87,29 @@ export async function askAI(messages, gen = {}) {
     try {
         const res = await task; // wait for model output
         // Return the text of the first choice (standard OpenAI-style response)
-        return res?.choices?.[0]?.message?.content ?? "";
+        const text = res?.choices?.[0]?.message?.content ?? "";
+
+        // --- NEW: log reply length (no content) ---
+        postTelemetry("ai_reply", {
+            attempt_no: ctx.attemptNo ?? null,
+            question_id: ctx.questionId ?? null,
+            model_id: DEFAULT_MODEL,
+            reply_chars: (text || "").length,
+            client_ts: new Date().toISOString()
+        });
+
+        return text;
+    } catch (err) {
+        // (Optional) log failures
+        postTelemetry("ai_reply", {
+            attempt_no: ctx.attemptNo ?? null,
+            question_id: ctx.questionId ?? null,
+            model_id: DEFAULT_MODEL,
+            reply_chars: null,
+            error: String(err && err.message || err),
+            client_ts: new Date().toISOString()
+        });
+        throw err;
     } finally {
         inflight = null; // clear lock whether it succeeded or threw
     }

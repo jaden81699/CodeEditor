@@ -38,4 +38,5 @@ urlpatterns = [
     path("pre-assessment-complete/", control_views.pre_assessment_complete, name="pre-survey-complete"),
     path("post-assessment/", control_app.views.post_assessment_questionnaire, name="post-assessment"),
     path("post-assessment-complete/", control_app.views.post_assessment_complete, name="post-assessment-complete"),
+    path("ai/telemetry/", control_app.views.ai_telemetry, name="ai_telemetry"),
 ]

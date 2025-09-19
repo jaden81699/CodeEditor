@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import subprocess
 import tempfile
@@ -15,11 +17,13 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import logout, get_user_model
 from django.urls import reverse_lazy, reverse
 from django.contrib.auth.views import LoginView
+from django.utils.timezone import make_aware
 from django.views.decorators.cache import never_cache, cache_control
+from django.views.decorators.http import require_POST
 
 from CodeEditor import settings
-from decorators import require_pre_assessment_completed, require_ready_for_post_assessment_questionnaire
-from editor.models import ParticipantProfile, Questions, Submission
+from decorators import *
+from editor.models import ParticipantProfile, Questions, Submission, AITelemetry
 from editor.views import compile_java_file, execute_java_file
 
 signer = TimestampSigner(salt="pre-survey-v1")
@@ -88,7 +92,9 @@ class ControlLoginView(LoginView):
 
 
 @login_required(login_url='login')
-@require_pre_assessment_completed
+# @require_pre_assessment_completed
+#@block_editor_while_post_survey_incomplete
+@guard_editor
 @never_cache
 @cache_control(no_store=True, no_cache=True, must_revalidate=True, max_age=0, private=True)
 def editor(request):
@@ -328,7 +334,9 @@ def run_code(request):
     return JsonResponse({"results": results})
 
 
-@login_required
+@login_required(login_url='login')
+@guard_pre
+@cache_control(no_store=True, no_cache=True, must_revalidate=True, max_age=0, private=True)
 def pre_assessment_questionnaire(request):
     profile = request.user.participantprofile
     token = secrets.token_urlsafe(16)
@@ -340,7 +348,7 @@ def pre_assessment_questionnaire(request):
     return redirect(f"{qualtrics_link}?uid={request.user.id}&state={state}")
 
 
-@login_required
+@login_required(login_url='login')
 @transaction.atomic
 def pre_assessment_complete(request):
     user = request.user
@@ -403,9 +411,20 @@ def pre_assessment_complete(request):
     return HttpResponseBadRequest("Couldn't find your group")
 
 
-@require_ready_for_post_assessment_questionnaire
+@guard_post
+@cache_control(no_store=True, no_cache=True, must_revalidate=True, max_age=0, private=True)
 def post_assessment_questionnaire(request):
     profile = request.user.participantprofile
+
+    # prerequisites (already enforced these elsewhere)
+    if not profile.pre_assessment_completed or not profile.both_ai_and_non_ai_portion_of_code_assessment_completed:
+        return redirect("editor")
+
+    # mark “in progress”
+    if not profile.post_assessment_started:
+        profile.post_assessment_started = True
+        profile.save(update_fields=["post_assessment_started"])
+
     token = secrets.token_urlsafe(16)
     profile.post_assessment_token = token
     profile.save(update_fields=["post_assessment_token"])
@@ -417,7 +436,8 @@ def post_assessment_questionnaire(request):
     return redirect(f"{qualtrics_link}?uid={request.user.id}&state={state}")
 
 
-@login_required
+@login_required(login_url='login')
+@guard_post
 @transaction.atomic
 def post_assessment_complete(request):
     profile = (request.user.participantprofile.__class__.objects
@@ -472,6 +492,55 @@ def post_assessment_complete(request):
     logout(request)  # end the current session
 
     return redirect("thank-you")  # or wherever you end
+
+
+@login_required
+@require_POST
+def ai_telemetry(request):
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+    except Exception:
+        return HttpResponseBadRequest("Invalid JSON")
+
+    # Minimal required field
+    event = data.get("event")
+    if event not in {"ai_tab_open", "ai_prompt", "ai_reply", "paste", "vis_hide", "vis_show"}:
+        return HttpResponseBadRequest("Unknown event")
+
+    # Optional numeric fields
+    attempt_no = data.get("attempt_no")
+    question_id = data.get("question_id")
+    model_id = data.get("model_id") or ""
+    prompt = (data.get("prompt") or "")[:4000]
+    reply = (data.get("reply") or "")[:4000]
+    paste_chars = data.get("paste_chars")
+    client_ts = data.get("client_ts")
+
+    prompt_hash = hashlib.sha256(prompt.encode()).hexdigest() if prompt else ""
+    reply_hash = hashlib.sha256(reply.encode()).hexdigest() if reply else ""
+
+    ct = None
+    if client_ts:
+        try:
+            ct = make_aware(datetime.datetime.fromisoformat(client_ts))
+        except Exception:
+            ct = None
+
+    AITelemetry.objects.create(
+        user=request.user,
+        attempt_no=attempt_no,
+        question_id=question_id,
+        event=event,
+        model_id=model_id[:64],
+        prompt_chars=len(prompt) or None,
+        reply_chars=len(reply) or None,
+        paste_chars=paste_chars,
+        prompt_hash=prompt_hash,
+        reply_hash=reply_hash,
+        ua=request.META.get("HTTP_USER_AGENT", "")[:1000],
+        client_ts=ct,
+    )
+    return JsonResponse({"ok": True})
 
 
 def thank_you(request):
