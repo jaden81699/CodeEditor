@@ -92,8 +92,6 @@ class ControlLoginView(LoginView):
 
 
 @login_required(login_url='login')
-# @require_pre_assessment_completed
-#@block_editor_while_post_survey_incomplete
 @guard_editor
 @never_cache
 @cache_control(no_store=True, no_cache=True, must_revalidate=True, max_age=0, private=True)
@@ -544,7 +542,11 @@ def ai_telemetry(request):
 
 
 def thank_you(request):
-    return render(request, "thank_you.html")
+    ctx = {
+        "support_email": "research@example.edu",
+        "study_title": "AI-Assisted Programming Study"
+    }
+    return render(request, "thank_you.html", ctx)
 
 
 class ControlLoginView(LoginView):

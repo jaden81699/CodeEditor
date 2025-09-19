@@ -6,16 +6,19 @@ from django.contrib.auth.decorators import login_required, user_passes_test
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse, HttpResponse
 from django.urls import reverse
+from django.views.decorators.cache import cache_control
 from django.views.decorators.http import require_POST
 
 from CodeEditor import settings
-from decorators import require_pre_assessment_completed
+from decorators import *
 from editor.forms import QuestionsForm, TestCaseFormSet
 from editor.models import Questions, ParticipantProfile, Submission
 
 
 @login_required(login_url='login')
-@require_pre_assessment_completed
+@guard_editor
+@never_cache
+@cache_control(no_store=True, no_cache=True, must_revalidate=True, max_age=0, private=True)
 def editor(request):
     profile = request.user.participantprofile
     is_exp = (profile.group == ParticipantProfile.EXPERIMENTAL)
