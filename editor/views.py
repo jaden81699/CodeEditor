@@ -1,7 +1,10 @@
 import json
 import os
+import shutil
 import subprocess
 import tempfile
+from pathlib import Path
+
 from django.contrib.auth.decorators import login_required, user_passes_test
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse, HttpResponse
@@ -97,13 +100,25 @@ def run_code(request):
 
             else:
                 # Unit test via your existing CountPositiveRunner.java
-                runner_src = "~/CodeEditor/java/CountPositiveRunner.java"
-                dest = os.path.join(temp_dir, "CountPositiveRunner.java")
-                subprocess.run(["cp", runner_src, dest], check=True)
+                runner_src = Path(settings.BASE_DIR) / "java" / "CountPositiveRunner.java"
+                if not runner_src.is_file():
+                    return JsonResponse(
+                        {"error": f"Unit-test runner not found on server: {runner_src}"},
+                        status=200
+                    )
 
-                # Compile the runner
+                dest = Path(temp_dir) / "CountPositiveRunner.java"
+                try:
+                    shutil.copyfile(runner_src, dest)
+                except Exception as e:
+                    return JsonResponse({"error": f"Copy runner failed: {e}"}, status=200)
+
+                # Compile the runner inside the temp dir so classpath = "."
                 cr = subprocess.run(
-                    ["javac", dest], capture_output=True, text=True
+                    ["javac", dest.name],  # just the filename
+                    cwd=temp_dir,
+                    capture_output=True,
+                    text=True
                 )
                 if cr.returncode != 0:
                     return JsonResponse({"error": cr.stderr}, status=200)
@@ -216,11 +231,19 @@ def submit_all(request):
                     )
                 else:
                     # unit‐test path
-                    runner_src = "/Users/jaden/PycharmProjects/CodeEditor/java/CountPositiveRunner.java"
-                    dest = os.path.join(tmp, "CountPositiveRunner.java")
-                    subprocess.run(["cp", runner_src, dest], check=True)
+                    runner_src = Path(settings.BASE_DIR) / "java" / "CountPositiveRunner.java"
+                    dest = Path(tmp) / "CountPositiveRunner.java"
+
+                    if not runner_src.exists():
+                        return JsonResponse({"error": f"Runner not found: {runner_src}"}, status=500)
+
+                    # copy the runner into the temp dir
+                    shutil.copyfile(runner_src, dest)
+
+                    # compile the runner in the temp dir
                     compile_runner = subprocess.run(
-                        ["javac", dest], capture_output=True, text=True
+                        ["javac", "CountPositiveRunner.java"],
+                        cwd=tmp, capture_output=True, text=True
                     )
                     if compile_runner.returncode == 0:
                         out_lines = execute_java_file("CountPositiveRunner", tmp).splitlines()

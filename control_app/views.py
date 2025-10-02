@@ -1,10 +1,12 @@
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import secrets
 from datetime import datetime
+from pathlib import Path
 from sqlite3 import IntegrityError
 
 from django.contrib.auth.decorators import login_required
@@ -177,10 +179,20 @@ def submit_all(request):
                         )
                     else:
                         # unit‐test path (CountPositiveRunner)
-                        runner_src = "~/CodeEditor/java/CountPositiveRunner.java"
-                        dst = os.path.join(tmp, "CountPositiveRunner.java")
-                        subprocess.run(["cp", runner_src, dst], check=True)
-                        cr = subprocess.run(["javac", dst], capture_output=True, text=True)
+                        runner_src = Path(settings.BASE_DIR) / "java" / "CountPositiveRunner.java"
+                        dest = Path(tmp) / "CountPositiveRunner.java"
+
+                        if not runner_src.exists():
+                            return JsonResponse({"error": f"Runner not found: {runner_src}"}, status=500)
+
+                        # copy the runner into the temp dir
+                        shutil.copyfile(runner_src, dest)
+
+                        # compile the runner in the temp dir
+                        cr = subprocess.run(
+                            ["javac", "CountPositiveRunner.java"],
+                            cwd=tmp, capture_output=True, text=True
+                        )
                         if cr.returncode == 0:
                             out = execute_java_file("CountPositiveRunner", tmp).splitlines()
                             actual = next((l.split("Actual:")[1].strip()
