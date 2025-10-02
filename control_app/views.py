@@ -177,7 +177,7 @@ def submit_all(request):
                         )
                     else:
                         # unit‐test path (CountPositiveRunner)
-                        runner_src = "/Users/jaden/PycharmProjects/CodeEditor/java/CountPositiveRunner.java"
+                        runner_src = "~/CodeEditor/java/CountPositiveRunner.java"
                         dst = os.path.join(tmp, "CountPositiveRunner.java")
                         subprocess.run(["cp", runner_src, dst], check=True)
                         cr = subprocess.run(["javac", dst], capture_output=True, text=True)

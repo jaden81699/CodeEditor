@@ -97,7 +97,7 @@ def run_code(request):
 
             else:
                 # Unit test via your existing CountPositiveRunner.java
-                runner_src = "/Users/jaden/PycharmProjects/CodeEditor/java/CountPositiveRunner.java"
+                runner_src = "~/CodeEditor/java/CountPositiveRunner.java"
                 dest = os.path.join(temp_dir, "CountPositiveRunner.java")
                 subprocess.run(["cp", runner_src, dest], check=True)
 
