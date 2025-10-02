@@ -173,7 +173,7 @@ def delete_question(request, question_id):
     return render(request, 'confirm-delete.html', {'question': question})
 
 
-@login_required(login_url='control_app:login')
+@login_required(login_url='login')
 def submit_all(request):
     """
     Accepts a JSON payload:
