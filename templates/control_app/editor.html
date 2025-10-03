@@ -246,6 +246,25 @@
             word-break: break-word;
         }
 
+        /* Prevent horizontal overscroll from bubbling up to the page */
+        #ai-card,
+        #chat-body,
+        #chat-body .bubble pre {
+            overscroll-behavior-x: contain;
+        }
+
+        /* Keep horizontal scrolling in code blocks */
+        #chat-body .bubble pre {
+            overflow-x: auto;
+            overflow-y: hidden;
+            white-space: pre; /* no wrapping; keep h-scroll */
+            -webkit-overflow-scrolling: touch;
+            scrollbar-gutter: stable; /* reserve gutter where supported */
+        }
+
+        html, body { overscroll-behavior-x: none; }
+
+
     </style>
 </head>
 
