@@ -3,19 +3,23 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from django.contrib.auth.decorators import login_required, user_passes_test
+from django.db import transaction
+from django.db.models import Max
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse, HttpResponse
 from django.urls import reverse
 from django.views.decorators.cache import cache_control
 from django.views.decorators.http import require_POST
+from openai import OpenAI
 
 from CodeEditor import settings
 from decorators import *
 from editor.forms import QuestionsForm, TestCaseFormSet
-from editor.models import Questions, ParticipantProfile, Submission
+from editor.models import Questions, ParticipantProfile, Submission, AICall
 
 
 @login_required(login_url='login')
@@ -46,6 +50,7 @@ def editor(request):
         "questions": questions,
         "is_experimental": is_exp,
         "exp_pass": exp_pass,  # so your JS can do attempt_no = {{ exp_pass }}
+        "attempt_no": exp_pass,
         "show_ai": show_ai,
     })
 
@@ -74,13 +79,22 @@ def run_code(request):
     except (Questions.DoesNotExist, ValueError):
         return JsonResponse({"error": "Invalid question_id."}, status=400)
 
+    harness = (
+            question.harness_code or "").strip()  # your model includes this field :contentReference[oaicite:2]{index=2}
+    if not harness:
+        return JsonResponse(
+            {"error": "Server configuration error: harness_code (Main.java) is missing for this question."}, status=500)
+
     test_cases = question.test_cases.all()
     results = []
 
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
-            # 1) Compile Main.java
-            cp = compile_java_file(code, "Main.java", temp_dir)
+            # 1) Compile Main.java and Solution.java
+            cp = compile_java_sources(temp_dir, {
+                "Solution.java": code,
+                "Main.java": harness,
+            })
             if cp.returncode != 0:
                 return JsonResponse({"error": cp.stderr}, status=200)
 
@@ -97,51 +111,6 @@ def run_code(request):
                         "actual_output": actual,
                         "passed": actual == expected
                     })
-
-            else:
-                # Unit test via your existing CountPositiveRunner.java
-                runner_src = Path(settings.BASE_DIR) / "java" / "CountPositiveRunner.java"
-                if not runner_src.is_file():
-                    return JsonResponse(
-                        {"error": f"Unit-test runner not found on server: {runner_src}"},
-                        status=200
-                    )
-
-                dest = Path(temp_dir) / "CountPositiveRunner.java"
-                try:
-                    shutil.copyfile(runner_src, dest)
-                except Exception as e:
-                    return JsonResponse({"error": f"Copy runner failed: {e}"}, status=200)
-
-                # Compile the runner inside the temp dir so classpath = "."
-                cr = subprocess.run(
-                    ["javac", dest.name],  # just the filename
-                    cwd=temp_dir,
-                    capture_output=True,
-                    text=True
-                )
-                if cr.returncode != 0:
-                    return JsonResponse({"error": cr.stderr}, status=200)
-
-                # Run the runner
-                out = execute_java_file("CountPositiveRunner", temp_dir)
-
-                # Parse lines for “Actual:” prefix
-                actual_val = None
-                for line in out.splitlines():
-                    if line.startswith("Actual:"):
-                        actual_val = line.split("Actual:")[1].strip()
-                        break
-
-                expected_val = "6"
-                passed = (actual_val == expected_val)
-                results.append({
-                    "input": None,
-                    "expected_output": expected_val,
-                    "actual_output": actual_val or out,
-                    "passed": passed
-                })
-
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
 
@@ -220,8 +189,16 @@ def submit_all(request):
 
         # compile & run
         is_correct = False
+        harness = (question.harness_code or "").strip()
+        if not harness:
+            return JsonResponse({"error": f"Server configuration error: harness_code missing for question {qid}."},
+                                status=500)
+
         with tempfile.TemporaryDirectory() as tmp:
-            compile_proc = compile_java_file(code, "Main.java", tmp)
+            compile_proc = compile_java_sources(tmp, {
+                "Solution.java": code,
+                "Main.java": harness,
+            })
             if compile_proc.returncode == 0:
                 if question.question_type == "IO":
                     is_correct = all(
@@ -229,30 +206,6 @@ def submit_all(request):
                         == tc.expected_output.strip()
                         for tc in question.test_cases.all()
                     )
-                else:
-                    # unit‐test path
-                    runner_src = Path(settings.BASE_DIR) / "java" / "CountPositiveRunner.java"
-                    dest = Path(tmp) / "CountPositiveRunner.java"
-
-                    if not runner_src.exists():
-                        return JsonResponse({"error": f"Runner not found: {runner_src}"}, status=500)
-
-                    # copy the runner into the temp dir
-                    shutil.copyfile(runner_src, dest)
-
-                    # compile the runner in the temp dir
-                    compile_runner = subprocess.run(
-                        ["javac", "CountPositiveRunner.java"],
-                        cwd=tmp, capture_output=True, text=True
-                    )
-                    if compile_runner.returncode == 0:
-                        out_lines = execute_java_file("CountPositiveRunner", tmp).splitlines()
-                        actual = next(
-                            (l.split("Actual:")[1].strip()
-                             for l in out_lines if l.startswith("Actual:")),
-                            None
-                        )
-                        is_correct = (actual == "6")
         print(f"[DEBUG]    → is_correct = {is_correct}")
         # record in DB
         Submission.objects.create(
@@ -313,6 +266,177 @@ def submit_all(request):
     })
 
 
+DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.1-codex-mini")
+DEFAULT_MAX_OUT = int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "400"))
+
+# Your existing “hints-mode” style prompt (keep it general for your study)
+HINTS_SYSTEM_PROMPT = """
+You are a programming tutor in a research study. Your goal is to help the student learn and retain problem-solving skills.
+
+Core rules:
+- Do NOT provide a complete solution, full program, or a full method/function that would solve the task end-to-end.
+- Avoid copy-pastable code. If you include code-like text, limit to small illustrative snippets (≤10 lines) and never enough to fully solve the task.
+- Focus on reasoning: algorithm idea, invariants, complexity, and how to verify correctness.
+- Be concrete; do not invent requirements. If details are missing, state a reasonable assumption briefly and proceed.
+
+Tutoring behavior (reduce offloading):
+- Prefer hints, guiding questions, and partial scaffolds over finished answers.
+- Encourage retrieval practice: end with 1–2 short questions that force the student to choose the next step.
+- If the student asks for “the answer” or “full code,” redirect to a plan + a small example snippet and ask them to implement the rest.
+
+Debugging protocol (when the student shows code/errors):
+- First explain the likely cause in plain language.
+- Then give the minimal fix (steps or a small snippet ≤10 lines).
+- Then give quick verification steps (how to test/what output should change).
+- Do not rewrite the entire solution.
+
+Response style:
+- Default: answer directly in 2–8 sentences or concise bullets. Do not force a template.
+- Use the structured “Hints Mode” format ONLY when the student asks for hints/approach/plan or seems stuck conceptually.
+
+Hints Mode format:
+1) Approach (2–5 bullets)
+2) Edge cases (1–4 bullets)
+3) Self-check questions (2–5 bullets)
+""".strip()
+
+
+@require_POST
+@login_required(login_url="login")
+@guard_editor
+def ai_respond(request):
+    try:
+        client = get_openai_client()
+        payload = json.loads(request.body.decode("utf-8"))
+        user_text = (payload.get("text") or "").strip()
+        if not user_text:
+            return JsonResponse({"error": "Empty prompt."}, status=400)
+
+        # 🔒 Lock system prompt server-side (ignore any client override)
+        instructions = HINTS_SYSTEM_PROMPT
+
+        # Light metadata (IDs only)
+        attempt_no = payload.get("attempt_no")
+        try:
+            attempt_no = int(attempt_no) if attempt_no is not None else None
+        except Exception:
+            attempt_no = None
+
+        question_id = payload.get("question_id")
+        try:
+            question_id = int(question_id) if question_id is not None else None
+        except Exception:
+            question_id = None
+
+        mode = (payload.get("mode") or "").strip().lower()[:16]  # optional label
+
+        # Conversation grouping (per user + attempt + question)
+        conv = f"u{request.user.id}:a{attempt_no or 0}:q{question_id or 0}"
+
+        # Server-controlled history window
+        history_window = 4
+
+        start = time.time()
+        with transaction.atomic():
+            last = (AICall.objects
+            .select_for_update()
+            .filter(conversation_id=conv)
+            .aggregate(mx=Max("turn_index"))["mx"])
+            turn_index = int(last + 1) if last is not None else 0
+
+            history_qs = (AICall.objects
+                          .filter(conversation_id=conv)
+                          .order_by("-turn_index")
+                          .only("id", "user_text", "assistant_text")[:history_window])
+            history_turns = list(reversed(list(history_qs)))
+            history_ids = [str(t.id) for t in history_turns]
+
+            row = AICall.objects.create(
+                user=request.user,
+                question_id=question_id,
+                attempt_no=attempt_no,
+                conversation_id=conv,
+                turn_index=turn_index,
+                mode=mode,
+                user_text=user_text,
+                history_turn_ids_sent=history_ids,
+                history_window_size=len(history_ids),
+            )
+
+        # Build prompt string from DB history + current user message
+        parts = []
+        if history_turns:
+            parts.append("Conversation so far:")
+            for t in history_turns:
+                parts.append(f"USER: {t.user_text}")
+                if (t.assistant_text or "").strip():
+                    parts.append(f"ASSISTANT: {t.assistant_text}")
+            parts.append("")
+        parts.append(f"USER: {user_text}")
+        prompt = "\n".join(parts)
+
+        resp = client.responses.create(
+            model=DEFAULT_MODEL,
+            input=prompt,
+            instructions=instructions,
+            max_output_tokens=DEFAULT_MAX_OUT,
+            service_tier="default",
+            store=False,
+            truncation="auto",
+            metadata={
+                "conversation_id": conv,
+                "turn_index": str(turn_index),
+                "question_id": str(question_id or ""),
+                "attempt_no": str(attempt_no or ""),
+                "mode": mode,
+            },
+        )
+
+        latency_ms = int((time.time() - start) * 1000)
+        out_text = resp.output_text or ""
+
+        usage = getattr(resp, "usage", None) or {}
+        if not isinstance(usage, dict):
+            usage = {}
+
+        with transaction.atomic():
+            AICall.objects.filter(id=row.id).update(
+                assistant_text=out_text,
+                openai_response_id=str(getattr(resp, "id", "") or ""),
+                model=str(DEFAULT_MODEL),
+                prompt_tokens=usage.get("input_tokens"),
+                completion_tokens=usage.get("output_tokens"),
+                total_tokens=usage.get("total_tokens"),
+                latency_ms=latency_ms,
+            )
+
+        return JsonResponse({"text": out_text})
+
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+def compile_java_sources(temp_dir: str, sources: dict[str, str]) -> subprocess.CompletedProcess:
+    """
+    sources example:
+      {
+        "Solution.java": "<user code>",
+        "Main.java": "<harness code>"
+      }
+    Writes files into temp_dir and compiles them together.
+    """
+    for filename, src in sources.items():
+        Path(temp_dir, filename).write_text(src, encoding="utf-8")
+
+    # compile in the temp dir so the class outputs land there
+    return subprocess.run(
+        ["javac", *sources.keys()],
+        cwd=temp_dir,
+        capture_output=True,
+        text=True
+    )
+
+
 def compile_java_file(code, filename, temp_dir):
     """
     Writes Java code to a file, compiles it, and returns the process result.
@@ -342,3 +466,12 @@ def execute_java_file(class_name, temp_dir, input_data=None):
         return run_process.stdout.strip() or run_process.stderr.strip()
     except Exception as e:
         return str(e)
+
+
+def get_openai_client():
+    api_key = getattr(settings, "OPENAI_API_KEY", None)
+    if not api_key:
+        # fall back to environment variable if you prefer:
+        # api_key = os.environ.get("OPENAI_API_KEY")
+        raise RuntimeError("OPENAI_API_KEY is not set")
+    return OpenAI(api_key=api_key)

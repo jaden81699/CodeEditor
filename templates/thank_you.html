@@ -189,9 +189,9 @@
                     <div>
                         {% if request.user.is_authenticated %}
                             {% if request.user.participantprofile.group == 'C' %}
-                                <a href="{% url 'control_app:logout' %}" class="btn btn-danger">Log out</a>
+                                <a href="{% url 'logout' %}" class="btn btn-danger">Log out</a>
                             {% else %}
-                                <a href="{% url 'experimental_app:logout' %}" class="btn btn-danger">Log out</a>
+                                <a href="{% url 'logout' %}" class="btn btn-danger">Log out</a>
                             {% endif %}
                         {% endif %}
                         <button type="button" class="btn btn-outline-light" id="closeTab">Close Tab</button>

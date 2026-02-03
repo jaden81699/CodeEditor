@@ -6,7 +6,8 @@
     <title>AI-Assisted Programming</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="ai-telemetry-url" content="{% url 'ai_telemetry' %}">
-    <script>window.aiContext = {attemptNo: {{ attempt_no|default:1 }}, questionId: null};</script>
+    <meta name="ai-respond-url" content="{% url 'ai_respond' %}">
+    <script>window.aiContext = {attemptNo: {{ exp_pass|default:1 }}, questionId: null};</script>
     <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
           integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
@@ -17,7 +18,7 @@
         :root {
             --nav-h: 56px; /* updated by sizeWorkspace() */
             --ai-h: 72vh; /* AI card height target */
-            --editor-h: 240px; /* Monaco per-question height */
+            --editor-h: clamp(280px, 35vh, 460px);
         }
 
         /* Generic helpers */
@@ -263,6 +264,37 @@
             overscroll-behavior-x: none;
         }
 
+        .tc-pre {
+            white-space: pre-wrap;
+            margin: 0;
+            padding: 8px 10px;
+            border-radius: 8px;
+            background: rgba(0, 0, 0, .03);
+            border: 1px solid rgba(0, 0, 0, .08);
+            overflow-x: auto;
+        }
+
+
+        /* AI typing label (so dots don't feel "stuck") */
+        .typing-wrap {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .typing-label {
+            font-size: 0.92rem;
+            opacity: .85;
+        }
+
+        /* Bigger (auto-resizing) input box */
+        #user-input {
+            resize: none;
+            min-height: 54px;
+            max-height: 180px;
+            overflow-y: auto;
+        }
+
     </style>
 </head>
 <body>
@@ -307,7 +339,7 @@
                     <!-- Compiler column -->
                     <div class="col-12 {% if show_ai %}col-xl-7{% else %}col-xl-12{% endif %}">
                         <div class="card card-fill shadow-sm" id="compiler-card">
-                            <div class="card-header bg-primary text-white">Compiler Output</div>
+                            <div class="card-header bg-primary text-white">Question Set</div>
                             <div class="card-body">
                                 <div class="container py-2">
                                     <div style="display:none">{% csrf_token %}</div>
@@ -323,15 +355,15 @@
 
                                             <div class="card mb-4 shadow-sm">
                                                 <div class="card-header bg-secondary text-white">
-                                                    Question {{ forloop.counter }}</div>
+                                                    Question {{ forloop.counter }}: {{ question.question_name }}</div>
                                                 <div class="card-body">
-                                                    <p>{{ question.question_string }}</p>
+                                                    <div class="question-text"
+                                                         style="white-space: pre-wrap">{{ question.question_string }}</div>
 
                                                     <div id="editor-{{ question.id }}"
                                                          class="monaco-editor-container mb-3"
                                                          data-question-id="{{ question.id }}"
-                                                         data-starter-code="{{ question.user_starter_code }}"
-                                                         style="height:200px;"></div>
+                                                         data-starter-code="{{ question.user_starter_code }}"></div>
 
                                                     <button type="button" class="btn btn-success run-code-btn mb-3"
                                                             data-question-id="{{ question.id }}"
@@ -366,7 +398,10 @@
                             <div class="card card-fill shadow-sm" id="ai-card">
                                 <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
                                     <span>AI Tool</span>
-                                    <small id="ai-progress" class="text-warning-50 ms-2"></small>
+                                    <div class="d-flex align-items-center gap-2">
+
+                                        <small id="ai-progress" class="text-warning-50"></small>
+                                    </div>
                                 </div>
 
                                 <!-- Body is a flex column; #chat-body becomes the scroller -->
@@ -376,15 +411,12 @@
 
                                 <div class="card-footer">
                                     <div class="d-flex gap-2 align-items-end">
-                                        <textarea id="user-input" class="form-control" rows="1"
+                                        <textarea id="user-input" class="form-control" rows="3"
                                                   placeholder="Ask about your code… (Shift+Enter = newline)"></textarea>
                                         <button class="btn btn-primary" id="send-btn">Send</button>
                                     </div>
                                     <div class="text-muted small mt-2">Press Enter to send • Shift+Enter for newline
                                     </div>
-                                    <button id="reset-ai-cache" class="btn btn-outline-danger btn-sm mt-2">Reset AI
-                                        cache & reload
-                                    </button>
                                 </div>
 
                             </div>
@@ -497,19 +529,18 @@
         crossorigin="anonymous"></script>
 
 <!-- External JavaScript files -->
-<script src="{% static 'js/javaCompletions.js' %}"></script>
-<script src="{% static 'js/manualDiagnostics.js' %}"></script>
+<script src="{% static 'js/javaCompletions.js' %}?v=safe9plus"></script>
+<script src="{% static 'js/manualDiagnostics.js' %}?v=safe9plus"></script>
 
-<!-- WebLLM Code -->
+<!-- OpenAI Code -->
 <script type="module">
-    import {supported, initLLM, getAIResponse, setAIContext, resetWebLLM} from "{% static 'js/webllm-client.js' %}?v=4";
+    import {supported, initLLM, getAIResponse, setAIContext, resetWebLLM}
+        from "{% static 'js/openai-client.js' %}?v=2";
 
     window.webllm = {supported, initLLM, getAIResponse, setAIContext, resetWebLLM};
 
-    // pass attempt/question context into the module
     setAIContext({attemptNo: {{ attempt_no|default:1 }}, questionId: null});
 
-    // keep your progress hook if you want
     const prog = document.getElementById("ai-progress");
     const showProgress = (p) => {
         if (!prog) return;
@@ -517,17 +548,10 @@
         prog.textContent = `${pct}% — ${p?.text || ""}`;
     };
 
-    if (!supported()) {
-        prog && (prog.textContent = "WebGPU not available (Chrome/Edge ≥113 or Safari 17+).");
-        window.webllmReady = Promise.reject(new Error("WebGPU not available"));
-    } else {
-        window.webllmReady = initLLM({onProgress: showProgress}).catch(err => {
-            prog && (prog.textContent = "Load failed: " + err.message);
-            throw err;
-        });
-    }
-
-    document.addEventListener("webllm:progress", e => showProgress(e.detail));
+    window.webllmReady = initLLM({onProgress: showProgress}).catch(err => {
+        prog && (prog.textContent = "Load failed: " + err.message);
+        throw err;
+    });
 </script>
 
 
@@ -555,6 +579,23 @@
     const chat = document.getElementById('chat-body');
     const input = document.getElementById('user-input');
     const sendBtn = document.getElementById('send-btn');
+
+    // Keep a tiny rolling window of raw chat turns to send with each request.
+    const chatHistory = [];
+    const MAX_HISTORY_TURNS = 4;
+
+    // Auto-resize the input textarea so users can see more of what they're typing.
+    function autosizeInput() {
+        if (!input) return;
+        input.style.height = "auto";
+        const max = 180;
+        const next = Math.min(input.scrollHeight, max);
+        input.style.height = next + "px";
+    }
+
+    input?.addEventListener("input", autosizeInput);
+    autosizeInput();
+
 
     function renderAITextToHTML(text) {
         return formatAIResponse(text);
@@ -597,14 +638,44 @@
         return row;
     }
 
-    function showTyping() {
-        const html = `<div class="typing"><span></span><span></span><span></span></div>`;
-        return addMessage('assistant', html, {id: 'typing'});
+    let typingLabelEl = null;
+    let typingFallbackTimer = null;
+
+    function showTyping(label = "Thinking…") {
+        const html = `
+      <div class="typing-wrap">
+        <span class="typing-label">${escapeHtml(label)}</span>
+        <span class="typing" aria-hidden="true"><span></span><span></span><span></span></span>
+      </div>`;
+        const row = addMessage('assistant', html, {id: 'typing'});
+        typingLabelEl = row.querySelector('.typing-label');
+
+        clearTimeout(typingFallbackTimer);
+        typingFallbackTimer = setTimeout(() => {
+            if (typingLabelEl && (typingLabelEl.textContent || "").trim() === "Thinking…") {
+                typingLabelEl.textContent = "Still working…";
+            }
+        }, 6500);
+
+        return row;
+    }
+
+    function setTypingLabel(label) {
+        if (typingLabelEl) typingLabelEl.textContent = String(label || "");
     }
 
     function hideTyping() {
+        clearTimeout(typingFallbackTimer);
+        typingFallbackTimer = null;
+        typingLabelEl = null;
         chat.querySelector('.msg.assistant[data-id="typing"]')?.remove();
     }
+
+    // Allow the WebLLM module to update the typing label (e.g., "Refining answer…" during strict mode).
+    document.addEventListener("webllm:status", (e) => {
+        const txt = e?.detail?.text;
+        if (txt) setTypingLabel(txt);
+    });
 
     function attachCopyButtons(container) {
         container.querySelectorAll('pre > code').forEach(code => {
@@ -630,31 +701,43 @@
         });
     }
 
-
     async function sendMessage() {
         const text = (input.value || '').trim();
         if (!text) return;
 
+        // Send only a tiny rolling window of prior turns (2–4).
+        const historyForRequest = chatHistory.slice(-MAX_HISTORY_TURNS);
+
         addMessage('user', text.replace(/</g, '&lt;').replace(/>/g, '&gt;'));
+        chatHistory.push({role: 'user', text});
+
         input.value = '';
+        autosizeInput();
 
         sendBtn?.setAttribute('disabled', 'disabled');
-        showTyping();
+        showTyping('Thinking…');
 
         try {
-            const aiText = await window.webllm.getAIResponse(text);
+            const aiText = await window.webllm.getAIResponse(
+                text,
+                {history: historyForRequest},
+            );
 
             hideTyping();
             addMessage('assistant', renderAITextToHTML(aiText));
+            chatHistory.push({role: 'assistant', text: aiText});
         } catch (err) {
             hideTyping();
-            addMessage('assistant', `<em>Sorry, something went wrong.</em><br><small>${(err?.message || String(err))}</small>`);
+            const msg = `<em>Sorry, something went wrong.</em><br><small>${(err?.message || String(err))}</small>`;
+            addMessage('assistant', msg);
+            chatHistory.push({role: 'assistant', text: err?.message || String(err)});
             console.error(err);
         } finally {
             sendBtn?.removeAttribute('disabled');
             input?.focus();
         }
     }
+
 
     // Enter = send, Shift+Enter = newline
     input?.addEventListener('keydown', (e) => {
@@ -664,6 +747,13 @@
         }
     });
     sendBtn?.addEventListener('click', sendMessage);
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, ch =>
+            ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch])
+        );
+    }
+
 </script>
 
 
@@ -727,42 +817,124 @@
         return response.json();
     }
 
+    function firstMismatchIndex(a, b) {
+        a = String(a ?? "");
+        b = String(b ?? "");
+        const n = Math.min(a.length, b.length);
+        for (let i = 0; i < n; i++) {
+            if (a[i] !== b[i]) return i;
+        }
+        return (a.length === b.length) ? -1 : n;
+    }
+
+    function snippetAround(s, idx, radius = 20) {
+        s = String(s ?? "");
+        if (idx < 0) return "";
+        const start = Math.max(0, idx - radius);
+        const end = Math.min(s.length, idx + radius);
+        const prefix = start > 0 ? "…" : "";
+        const suffix = end < s.length ? "…" : "";
+        return prefix + s.slice(start, end) + suffix;
+    }
+
     function processServerResponse(data, compilerOutput, comparisonContainer) {
         setOutputSkin(compilerOutput, 'normal');
+        setOutputSkin(comparisonContainer, 'normal');
+
+        if (!data || typeof data !== "object") {
+            displayError(compilerOutput, "Unexpected server response.");
+            return;
+        }
         if (data.error) {
             displayError(compilerOutput, data.error);
             return;
         }
 
-        let outputHtml = "<h5>Program Output:</h5><ul>";
-        let comparisonHtml = "<h5>Comparison Results:</h5>";
+        const results = Array.isArray(data.results) ? data.results : [];
+        const total = results.length;
+        const passedCount = results.filter(r => !!r.passed).length;
 
-        data.results.forEach((result, idx) => {
-            outputHtml += `<li><strong>Test ${idx + 1}:</strong> ${result.actual_output.trim()}</li>`;
+        // ===== Summary (top box) =====
+        const statusEmoji = (total > 0 && passedCount === total) ? "✅"
+            : (passedCount > 0) ? "⚠️"
+                : "❌";
 
-            const diffHtml = highlightDifferences(
-                result.expected_output.trim(),
-                result.actual_output.trim()
-            );
+        compilerOutput.innerHTML = `
+    <div style="display:flex; gap:12px; align-items:baseline; flex-wrap:wrap;">
+      <div style="font-weight:700; font-size:1.05rem;">
+        ${statusEmoji} Run results
+      </div>
+      <div style="opacity:.85;">
+        ${passedCount}/${total} test case${total === 1 ? "" : "s"} passed
+      </div>
+    </div>
+    <div style="margin-top:6px; opacity:.75; font-size:.92rem;">
+      Tip: outputs are compared after trimming leading/trailing whitespace (server-side).
+    </div>
+  `;
 
-            const passed = result.expected_output.trim() === result.actual_output.trim()
-                ? `<span style="color: green;">✔ Passed</span>`
-                : `<span style="color: red;">❌ Failed</span>`;
+        // ===== Detailed per-test results =====
+        let html = `<h5 style="margin-top:12px;">Test Cases</h5>`;
 
-            comparisonHtml += `
-        <div>
-          <h6>Test Case ${idx + 1}</h6>
-          <strong>Input:</strong> ${result.input ? result.input.trim() : "N/A"}<br>
-          <strong>Expected Output:</strong> ${result.expected_output.trim()}<br>
-          <strong>Actual Output:</strong> ${diffHtml}<br>
-          <strong>Result:</strong> ${passed}
+        results.forEach((r, idx) => {
+            const input = (r.input ?? "");
+            const expected = (r.expected_output ?? "");
+            const actual = (r.actual_output ?? "");
+            const passed = !!r.passed;
+
+            const badge = passed
+                ? `<span style="color:#0a7a2f; font-weight:700;">✔ Passed</span>`
+                : `<span style="color:#b00020; font-weight:700;">✘ Failed</span>`;
+
+            // If failed, compute a helpful “first mismatch” hint
+            let mismatchHint = "";
+            if (!passed) {
+                const mi = firstMismatchIndex(expected, actual);
+                if (mi >= 0) {
+                    mismatchHint = `
+          <div style="margin-top:8px; padding:8px 10px; border-left:4px solid #b00020; background: rgba(176,0,32,.06);">
+            <div style="font-weight:700; color:#b00020;">First difference at character ${mi + 1}</div>
+            <div style="margin-top:4px; font-size:.92rem;">
+              <div><strong>Expected near diff:</strong> <code>${escapeHtml(snippetAround(expected, mi))}</code></div>
+              <div><strong>Actual near diff:</strong> <code>${escapeHtml(snippetAround(actual, mi))}</code></div>
+            </div>
+          </div>
+        `;
+                }
+            }
+
+            const inputBlock = input
+                ? `<pre class="tc-pre">${escapeHtml(String(input).trim())}</pre>`
+                : `<div style="opacity:.7;">N/A</div>`;
+
+            html += `
+      <div style="border:1px solid rgba(0,0,0,.15); border-radius:10px; padding:12px; margin:10px 0;">
+        <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+          <div style="font-weight:700;">Test Case ${idx + 1}</div>
+          <div>${badge}</div>
         </div>
-        <hr>`;
+
+        <div style="margin-top:10px;">
+          <div style="font-weight:700; margin-bottom:4px;">Input (stdin)</div>
+          ${inputBlock}
+        </div>
+
+        <div style="margin-top:10px;">
+          <div style="font-weight:700; margin-bottom:4px;">Expected Output</div>
+          <pre class="tc-pre">${escapeHtml(String(expected))}</pre>
+        </div>
+
+        <div style="margin-top:10px;">
+          <div style="font-weight:700; margin-bottom:4px;">Your Output</div>
+          <pre class="tc-pre">${escapeHtml(String(actual))}</pre>
+        </div>
+
+        ${mismatchHint}
+      </div>
+    `;
         });
 
-        outputHtml += "</ul>";
-        compilerOutput.innerHTML = outputHtml;
-        comparisonContainer.innerHTML = comparisonHtml;
+        comparisonContainer.innerHTML = html;
     }
 
     function highlightDifferences(expected, actual) {
@@ -788,8 +960,8 @@
 
             clearPreviousOutput(out, cmp);
 
-            if (!code.includes("class Main")) {
-                displayError(out, "Error: code must define a class named 'Main'.");
+            if (!code.includes("class Solution")) {
+                displayError(out, "Error: code must define a class named 'Solution'.");
                 return;
             }
 
@@ -807,6 +979,12 @@
             }
         });
     });
+
+    function clearEditorDraft(qid) {
+        const key = editorStorageKey(qid);
+        localStorage.removeItem(key);
+        localStorage.removeItem(key + ':pos');
+    }
 
     const btn = document.getElementById("submit-all")
     btn.addEventListener("click", async () => {
@@ -843,6 +1021,11 @@
 
         const data = await resp.json();
 
+        // ✅ clear drafts for this page/attempt before leaving
+        document.querySelectorAll(".monaco-editor-container").forEach(el => {
+            clearEditorDraft(el.dataset.questionId);
+        });
+
         // 3️⃣ act on the server’s instructions
         if (data.status === "redirect") {
             // either all‐wrong on first pass or second pass
@@ -854,6 +1037,19 @@
             console.error("Unexpected response from submit-all:", data);
         }
     });
+
+    function navType() {
+        const nav = performance.getEntriesByType?.('navigation')?.[0];
+        if (nav?.type) return nav.type; // 'navigate' | 'reload' | 'back_forward'
+        // fallback for older browsers:
+        const t = performance.navigation?.type;
+        return (t === 1) ? 'reload' : (t === 2) ? 'back_forward' : 'navigate';
+    }
+
+    function shouldRestoreDraft() {
+        const t = navType();
+        return t === 'reload' || t === 'back_forward';
+    }
 
 </script>
 
@@ -877,11 +1073,14 @@
         return `<${type}><li>${content}</li></${type}>`;
     }
 
+    // ---- Draft / localStorage helpers ----
+    const attemptNo = window.aiContext?.attemptNo ?? 1;
+
     // Stable storage key so attempts/pages don’t clash
     function editorStorageKey(qid) {
         const page = location.pathname;
-        const attempt = (window.aiContext?.attemptNo) || 1;
-        return `monaco:${page}:attempt${attempt}:q${qid}:v1`;
+        const stage = window.aiContext?.stageId ?? "default"; // safe fallback
+        return `monaco:${page}:stage${stage}:attempt${attemptNo}:q${qid}:v1`;
     }
 
     // small generic debounce
@@ -896,14 +1095,31 @@
     function setupMonacoEditor() {
         window.editors = window.editors || {};  // ✅ ensure it exists
         require(['vs/editor/editor.main'], () => {
+            if (!window.__javaCompletionsRegistered && typeof registerJavaCompletions === 'function') {
+                try {
+                    registerJavaCompletions();     // ✅ no args (uses global monaco)
+                    // or: registerJavaCompletions(monaco);  // ✅ also fine
+                    window.__javaCompletionsRegistered = true;
+                } catch (e) {
+                    console.error("Java completions failed to register:", e);
+                }
+            }
             document.querySelectorAll('.monaco-editor-container')
                 .forEach(container => {
                     const qid = container.dataset.questionId;
                     const starter = container.dataset.starterCode || '';
+
                     const key = editorStorageKey(qid);
+                    const posKey = key + ':pos';
+
+                    // ✅ put cleanup here (before you read from localStorage)
+                    if (!shouldRestoreDraft()) {
+                        localStorage.removeItem(key);
+                        localStorage.removeItem(posKey);
+                    }
 
                     // hydrate from localStorage if present, else fallback to starter
-                    const saved = localStorage.getItem(key);
+                    const saved = shouldRestoreDraft() ? localStorage.getItem(key) : null;
                     const initialValue = (saved !== null) ? saved : starter;
 
                     // create and store each editor
@@ -927,7 +1143,6 @@
                     editor.onDidChangeModelContent(save);
 
                     // optional: restore cursor/scroll position too
-                    const posKey = key + ':pos';
                     const savedPos = localStorage.getItem(posKey);
                     if (savedPos) {
                         try {
@@ -944,14 +1159,13 @@
                             scrollTop: editor.getScrollTop()
                         }));
                     }, 400));
-                });
 
-            // optional: register completions if you have that hook
-            if (typeof registerJavaCompletions === 'function') {
-                registerJavaCompletions(window.editors[qid]);
-            }
+                    if (typeof initManualDiagnostics === "function") {
+                        initManualDiagnostics(window.editors);
+                    }
+                });
         });
-        initManualDiagnostics(window.editors);
+
     }
 
     setupMonacoEditor();

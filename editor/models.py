@@ -1,3 +1,5 @@
+import uuid
+
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.db import models
@@ -14,7 +16,9 @@ class Questions(models.Model):
     question_string = models.CharField(max_length=2000)
     question_type = models.CharField(max_length=10, choices=QUESTION_TYPE_CHOICES)
     user_starter_code = models.CharField(max_length=20000, default="")
+    harness_code = models.CharField(max_length=20000, default="")
     instructor_code = models.CharField(max_length=20000, default="")
+    question_name = models.CharField(max_length=200, default="")
 
     def __str__(self):
         return self.question_string
@@ -95,6 +99,50 @@ class RandomizationBlock(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
 
+class AICall(models.Model):
+    """
+    One OpenAI call/response (turn) used for research analysis.
+    Keep AITelemetry for UI events; use AICall as the authoritative transcript per call.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    question = models.ForeignKey("editor.Questions", null=True, blank=True, on_delete=models.SET_NULL)
+
+    attempt_no = models.PositiveSmallIntegerField(null=True, blank=True)  # 1 or 2
+    conversation_id = models.CharField(max_length=128, db_index=True)
+    turn_index = models.PositiveIntegerField()
+
+    # Optional label you can set client-side or infer server-side ("hints", "debug", "direct")
+    mode = models.CharField(max_length=16, blank=True)
+
+    user_text = models.TextField()
+    assistant_text = models.TextField(blank=True)
+
+    # What prior turns were included (store IDs, so you can reconstruct exact context)
+    history_turn_ids_sent = models.JSONField(default=list, blank=True)
+    history_window_size = models.PositiveSmallIntegerField(default=0)
+
+    # OpenAI metadata
+    openai_response_id = models.CharField(max_length=128, blank=True)
+    model = models.CharField(max_length=64, blank=True)
+    prompt_tokens = models.IntegerField(null=True, blank=True)
+    completion_tokens = models.IntegerField(null=True, blank=True)
+    total_tokens = models.IntegerField(null=True, blank=True)
+    latency_ms = models.IntegerField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "attempt_no", "question", "created_at"]),
+            models.Index(fields=["conversation_id", "turn_index"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=["conversation_id", "turn_index"], name="uniq_conversation_turn")
+        ]
+
+
 class AITelemetry(models.Model):
     EVENT_CHOICES = [
         ("ai_tab_open", "AI tab opened"),
@@ -106,16 +154,9 @@ class AITelemetry(models.Model):
     ]
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     attempt_no = models.IntegerField(null=True, blank=True)
-    question_id = models.IntegerField(null=True, blank=True)
     event = models.CharField(max_length=32, choices=EVENT_CHOICES)
-    model_id = models.CharField(max_length=64, blank=True)
-    prompt_chars = models.IntegerField(null=True, blank=True)
+    prompt = models.CharField(max_length=10000, null=True, blank=True)
     reply_chars = models.IntegerField(null=True, blank=True)
-    paste_chars = models.IntegerField(null=True, blank=True)
-    prompt_hash = models.CharField(max_length=64, blank=True)  # SHA-256 hex of prompt (optional)
-    reply_hash = models.CharField(max_length=64, blank=True)  # SHA-256 hex of reply (optional)
-    ua = models.TextField(blank=True)  # user-agent (optional)
-    client_ts = models.DateTimeField(null=True, blank=True)  # client timestamp (optional)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

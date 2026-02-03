@@ -26,7 +26,7 @@ from django.views.decorators.http import require_POST
 from CodeEditor import settings
 from decorators import *
 from editor.models import ParticipantProfile, Questions, Submission, AITelemetry
-from editor.views import compile_java_file, execute_java_file
+from editor.views import compile_java_file, execute_java_file, compile_java_sources
 
 signer = TimestampSigner(salt="pre-survey-v1")
 
@@ -134,6 +134,7 @@ def editor(request):
         "control_pass": control_pass,
         "first_correct": first_correct,
         "second_correct": second_correct,
+        "attempt_no": control_pass,
         # if you still want to show their cumulative profile stats:
         "first_score": profile.first_attempt_correct,
         "control_failed": profile.first_attempt_incorrect,
@@ -160,51 +161,38 @@ def submit_all(request):
 
     # first‐pass or second‐pass?
     control_pass = request.session.get("control_pass", 1)
-
     wrong_ids = []
+
     # loop through each pair
     for qid, code in zip(question_ids, codes):
-        q = get_object_or_404(Questions, pk=int(qid))
+        question = get_object_or_404(Questions, pk=int(qid))
         # compile & run
         is_correct = False
+        harness = (question.harness_code or "").strip()
+        if not harness:
+            return JsonResponse({"error": f"Server configuration error: harness_code missing for question {qid}."},
+                                status=500)
+
         try:
             with tempfile.TemporaryDirectory() as tmp:
-                cp = compile_java_file(code, "Main.java", tmp)
-                if cp.returncode == 0:
-                    if q.question_type == "IO":
+                compile_proc = compile_java_sources(tmp, {
+                    "Solution.java": code,
+                    "Main.java": harness,
+                })
+                if compile_proc.returncode == 0:
+                    if question.question_type == "IO":
                         is_correct = all(
                             execute_java_file("Main", tmp, input_data=tc.test_input).strip()
                             == tc.expected_output.strip()
-                            for tc in q.test_cases.all()
+                            for tc in question.test_cases.all()
                         )
-                    else:
-                        # unit‐test path (CountPositiveRunner)
-                        runner_src = Path(settings.BASE_DIR) / "java" / "CountPositiveRunner.java"
-                        dest = Path(tmp) / "CountPositiveRunner.java"
-
-                        if not runner_src.exists():
-                            return JsonResponse({"error": f"Runner not found: {runner_src}"}, status=500)
-
-                        # copy the runner into the temp dir
-                        shutil.copyfile(runner_src, dest)
-
-                        # compile the runner in the temp dir
-                        cr = subprocess.run(
-                            ["javac", "CountPositiveRunner.java"],
-                            cwd=tmp, capture_output=True, text=True
-                        )
-                        if cr.returncode == 0:
-                            out = execute_java_file("CountPositiveRunner", tmp).splitlines()
-                            actual = next((l.split("Actual:")[1].strip()
-                                           for l in out if l.startswith("Actual:")), None)
-                            is_correct = (actual == "6")
         except:
             is_correct = False
 
         # record submission
         Submission.objects.create(
             user=request.user,
-            question=q,
+            question=question,
             attempt_no=control_pass,
             used_ai=(is_ctrl and control_pass == 2),
             is_correct=is_correct
@@ -218,7 +206,7 @@ def submit_all(request):
                 profile.first_attempt_incorrect += 1
 
         if not is_correct and control_pass == 1:
-            wrong_ids.append(q.id)
+            wrong_ids.append(question.id)
 
     print(">> received qids:", question_ids)
     print(">> received codes:", len(codes), "items")
@@ -282,13 +270,22 @@ def run_code(request):
     except (Questions.DoesNotExist, ValueError):
         return JsonResponse({"error": "Invalid question_id."}, status=400)
 
+    harness = (
+            question.harness_code or "").strip()  # your model includes this field :contentReference[oaicite:2]{index=2}
+    if not harness:
+        return JsonResponse(
+            {"error": "Server configuration error: harness_code (Main.java) is missing for this question."}, status=500)
+
     test_cases = question.test_cases.all()
     results = []
 
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
-            # 1) Compile Main.java
-            cp = compile_java_file(code, "Main.java", temp_dir)
+            # 1) Compile Main.java and Solution.java
+            cp = compile_java_sources(temp_dir, {
+                "Solution.java": code,
+                "Main.java": harness,
+            })
             if cp.returncode != 0:
                 return JsonResponse({"error": cp.stderr}, status=200)
 
@@ -305,38 +302,6 @@ def run_code(request):
                         "actual_output": actual,
                         "passed": actual == expected
                     })
-
-            else:
-                # Unit test via your existing CountPositiveRunner.java
-                runner_src = "/Users/jaden/PycharmProjects/CodeEditor/java/CountPositiveRunner.java"
-                dest = os.path.join(temp_dir, "CountPositiveRunner.java")
-                subprocess.run(["cp", runner_src, dest], check=True)
-
-                # Compile the runner
-                cr = subprocess.run(
-                    ["javac", dest], capture_output=True, text=True
-                )
-                if cr.returncode != 0:
-                    return JsonResponse({"error": cr.stderr}, status=200)
-
-                # Run the runner
-                out = execute_java_file("CountPositiveRunner", temp_dir)
-
-                # Parse lines for “Actual:” prefix
-                actual_val = None
-                for line in out.splitlines():
-                    if line.startswith("Actual:"):
-                        actual_val = line.split("Actual:")[1].strip()
-                        break
-
-                expected_val = "6"
-                passed = (actual_val == expected_val)
-                results.append({
-                    "input": None,
-                    "expected_output": expected_val,
-                    "actual_output": actual_val or out,
-                    "passed": passed
-                })
 
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
@@ -539,16 +504,9 @@ def ai_telemetry(request):
     AITelemetry.objects.create(
         user=request.user,
         attempt_no=attempt_no,
-        question_id=question_id,
         event=event,
-        model_id=model_id[:64],
-        prompt_chars=len(prompt) or None,
+        prompt=prompt or None,
         reply_chars=len(reply) or None,
-        paste_chars=paste_chars,
-        prompt_hash=prompt_hash,
-        reply_hash=reply_hash,
-        ua=request.META.get("HTTP_USER_AGENT", "")[:1000],
-        client_ts=ct,
     )
     return JsonResponse({"ok": True})
 
