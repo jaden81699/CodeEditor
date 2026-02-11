@@ -11,6 +11,12 @@ QUESTION_TYPE_CHOICES = [
     ('UNIT', 'Unit'),
 ]
 
+DIFFICULTY_CHOICES = [
+    ("EASY", "Easy"),
+    ("MED", "Medium"),
+    ("HARD", "Hard"),
+]
+
 
 class Questions(models.Model):
     question_string = models.CharField(max_length=2000)
@@ -19,6 +25,7 @@ class Questions(models.Model):
     harness_code = models.CharField(max_length=20000, default="")
     instructor_code = models.CharField(max_length=20000, default="")
     question_name = models.CharField(max_length=200, default="")
+    difficulty = models.CharField(max_length=8, choices=DIFFICULTY_CHOICES, default="EASY", db_index=True)
 
     def __str__(self):
         return self.question_string
@@ -81,6 +88,7 @@ class Submission(models.Model):
     attempt_no = models.PositiveSmallIntegerField()  # 1 or 2
     used_ai = models.BooleanField()  # True if Gemini pane allowed
     is_correct = models.BooleanField()
+    time_spent_ms = models.PositiveIntegerField(default=0)  # total active time on this question for this attempt
     timestamp = models.DateTimeField(auto_now_add=True)
 
 

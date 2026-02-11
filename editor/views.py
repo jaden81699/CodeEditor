@@ -6,13 +6,14 @@ import tempfile
 import time
 from pathlib import Path
 
+from django.contrib.auth import logout
 from django.contrib.auth.decorators import login_required, user_passes_test
 from django.db import transaction
-from django.db.models import Max
+from django.db.models import Max, Count
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse, HttpResponse
 from django.urls import reverse
-from django.views.decorators.cache import cache_control
+from django.views.decorators.cache import cache_control, never_cache
 from django.views.decorators.http import require_POST
 from openai import OpenAI
 
@@ -22,37 +23,150 @@ from editor.forms import QuestionsForm, TestCaseFormSet
 from editor.models import Questions, ParticipantProfile, Submission, AICall
 
 
+def _difficulty_label(question) -> str:
+    """Return a human-friendly difficulty label if the field exists."""
+    getter = getattr(question, "get_difficulty_display", None)
+    if callable(getter):
+        try:
+            return getter()
+        except Exception:
+            pass
+    return str(getattr(question, "difficulty", "") or "")
+
+
+def get_attempt_question_lists(user):
+    """
+    Returns per-attempt lists of which questions were correct/wrong.
+    Each item includes question id, name, and difficulty (if available).
+    """
+    subs = (Submission.objects
+            .filter(user=user, attempt_no__in=(1, 2))
+            .select_related("question"))
+
+    def pack(qs):
+        out = []
+        for s in qs:
+            q = s.question
+            out.append({
+                "question_id": q.id,
+                "question_name": q.question_name,
+                "difficulty": _difficulty_label(q),
+                "is_correct": bool(s.is_correct),
+            })
+        return out
+
+    return {
+        "attempt1": {
+            "correct": pack(subs.filter(attempt_no=1, is_correct=True)),
+            "wrong": pack(subs.filter(attempt_no=1, is_correct=False)),
+        },
+        "attempt2": {
+            "correct": pack(subs.filter(attempt_no=2, is_correct=True)),
+            "wrong": pack(subs.filter(attempt_no=2, is_correct=False)),
+        },
+    }
+
+
+def get_difficulty_summary(user, attempt_no: int):
+    """
+    Returns grouped counts by (difficulty, is_correct) for the given attempt.
+    Works once Questions.difficulty is implemented; otherwise difficulty will be ''.
+    """
+    if not hasattr(Questions, "difficulty"):
+        return []
+
+    return list(
+        (Submission.objects
+         .filter(user=user, attempt_no=attempt_no)
+         .values("question__difficulty", "is_correct")
+         .annotate(n=Count("id"))
+         .order_by("question__difficulty", "is_correct"))
+    )
+
+
+def get_improved_question_ids(user):
+    """Question IDs that were wrong on attempt 1 and correct on attempt 2."""
+    s1 = {s.question_id: s.is_correct
+          for s in Submission.objects.filter(user=user, attempt_no=1)}
+    s2 = {s.question_id: s.is_correct
+          for s in Submission.objects.filter(user=user, attempt_no=2)}
+    return [qid for qid, ok1 in s1.items() if (ok1 is False and s2.get(qid) is True)]
+
+
 @login_required(login_url='login')
 @guard_editor
 @never_cache
 @cache_control(no_store=True, no_cache=True, must_revalidate=True, max_age=0, private=True)
 def editor(request):
     profile = request.user.participantprofile
-    is_exp = (profile.group == ParticipantProfile.EXPERIMENTAL)
+    is_experimental = (profile.group == ParticipantProfile.EXPERIMENTAL)
 
-    # 1️⃣ Read which pass we're on (1 or 2)
+    # which pass are they on? 1 = AI-enabled pass, 2 = no-AI redo on missed questions
     exp_pass = request.session.get("experimental_pass", 1)
+    redo_mode = (exp_pass == 2)
 
-    # 2️⃣ Pick questions + AI visibility
-    if is_exp and exp_pass == 2:
-        # second pass: only the kept questions
+    # pick questions + AI visibility
+    # Pass 1: AI-enabled, show the full set
+    # Pass 2: NO-AI, replay ONLY the questions they got correct on pass 1
+    if exp_pass == 1:
+        questions = Questions.objects.order_by("id")[:3]
+        show_ai = True
+    else:
         keep_ids = request.session.get("experimental_keep_ids", [])
+        if not keep_ids:
+            # Fallback (e.g., older sessions): derive from attempt 1 correct submissions
+            keep_ids = list(Submission.objects.filter(
+                user=request.user, attempt_no=1, is_correct=True
+            ).values_list("question_id", flat=True))
+            request.session["experimental_keep_ids"] = keep_ids
+            request.session.modified = True
+
+        if not keep_ids:
+            # Still nothing to replay (they passed none on pass 1); push them forward.
+            return redirect("thank-you")
+
         questions = Questions.objects.filter(id__in=keep_ids).order_by("id")
         show_ai = False
-    else:
-        # first pass normal
-        questions = Questions.objects.all().order_by("id")[:3]
-        show_ai = True
-        # and ensure we're set back to pass 1 if they just hit /editor/ manually
-        request.session["experimental_pass"] = 1
 
-    return render(request, "experimental_app/editor.html", {
+    # how many they got right on pass 1 and pass 2
+    first_correct = Submission.objects.filter(
+        user=request.user, attempt_no=1, is_correct=True
+    ).count()
+    second_correct = Submission.objects.filter(
+        user=request.user, attempt_no=2, is_correct=True
+    ).count()
+
+    # Per-question outcome tracking (by attempt and (optionally) by difficulty)
+    attempt_lists = get_attempt_question_lists(request.user)
+    improved_qids = get_improved_question_ids(request.user)
+
+    # Grouped summaries by difficulty (once you add Questions.difficulty)
+    attempt1_difficulty_summary = get_difficulty_summary(request.user, 1)
+    attempt2_difficulty_summary = get_difficulty_summary(request.user, 2)
+
+    resp = render(request, "experimental_app/editor.html", {
         "questions": questions,
-        "is_experimental": is_exp,
-        "exp_pass": exp_pass,  # so your JS can do attempt_no = {{ exp_pass }}
-        "attempt_no": exp_pass,
+        "is_experimental": is_experimental,
+        "redo_mode": redo_mode,
         "show_ai": show_ai,
+        "exp_pass": exp_pass,
+        "attempt_no": exp_pass,
+
+        "first_correct": first_correct,
+        "second_correct": second_correct,
+
+        "attempt_lists": attempt_lists,
+        "improved_qids": improved_qids,
+        "attempt1_difficulty_summary": attempt1_difficulty_summary,
+        "attempt2_difficulty_summary": attempt2_difficulty_summary,
+
+        # optional profile counters (if your template uses them)
+        "first_score": profile.first_attempt_correct,
+        "exp_failed": profile.first_attempt_incorrect,
     })
+    resp["Cross-Origin-Opener-Policy"] = "same-origin"
+    resp["Cross-Origin-Embedder-Policy"] = "require-corp"
+    return resp
 
 
 @require_POST
@@ -158,147 +272,191 @@ def delete_question(request, question_id):
 
 
 @login_required(login_url='login')
+@require_POST
 def submit_all(request):
     """
-    Accepts a JSON payload:
-      { "submissions": [
-          { "question_id": 5, "code": "...", "attempt_no": 1 },
-          { "question_id": 6, "code": "...", "attempt_no": 1 },
-          { "question_id": 7, "code": "...", "attempt_no": 1 }
-        ]
-      }
-    Runs through each, records Submission, updates counters, then returns:
-      • next="second-pass", keep_ids=[…], hide_ai=True
-      • or next="thank-you", redirect_url="/…"
+    Handles *all* question submissions in one POST (experimental group).
+
+    Accepts either:
+      1) form-encoded payload:
+            question_id=<id>&code=<code>&time_spent_ms=<ms>  (repeated for each question)
+      2) JSON payload:
+            {"submissions":[{"question_id":1,"code":"...","time_spent_ms":1234}, ...]}
+
+    Notes:
+    - attempt_no is derived from the server-side session (experimental_pass) to prevent tampering.
+    - counters are recomputed from Submission rows to remain idempotent (no double-counting on re-submit).
+    - time_spent_ms is treated as client-reported "active" time on that question for that attempt.
     """
-    payload = json.loads(request.body.decode('utf-8'))
-    submissions = payload.get("submissions", [])
-    user = request.user
+    # --- Parse payload (supports form-encoded and JSON) ---
+    if request.content_type and request.content_type.startswith("application/json"):
+        try:
+            payload = json.loads(request.body.decode("utf-8") or "{}")
+        except Exception:
+            return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+        submissions = payload.get("submissions") or []
+        question_ids = [str(s.get("question_id", "")).strip() for s in submissions]
+        codes = [str(s.get("code", "")) for s in submissions]
+        time_spent_raw = [s.get("time_spent_ms", 0) for s in submissions]
+    else:
+        question_ids = request.POST.getlist("question_id")
+        codes = request.POST.getlist("code")
+        time_spent_raw = request.POST.getlist("time_spent_ms")
+
+    if len(question_ids) != len(codes):
+        return JsonResponse(
+            {"error": f"Mismatched payload: received {len(question_ids)} question_ids but {len(codes)} code entries."},
+            status=400
+        )
+
+    # Normalize/validate qids
+    try:
+        qids_int = [int(qid) for qid in question_ids]
+    except Exception:
+        return JsonResponse({"error": "Invalid question_id list."}, status=400)
+
+    # Normalize timing list (pad/trim to match qids)
+    def _parse_ms(v):
+        try:
+            ms = int(float(v))
+        except Exception:
+            ms = 0
+        if ms < 0:
+            ms = 0
+        cap = 24 * 60 * 60 * 1000  # 24 hours
+        if ms > cap:
+            ms = cap
+        return ms
+
+    time_ms = [_parse_ms(v) for v in time_spent_raw]
+    if len(time_ms) < len(qids_int):
+        time_ms.extend([0] * (len(qids_int) - len(time_ms)))
+    elif len(time_ms) > len(qids_int):
+        time_ms = time_ms[:len(qids_int)]
+
     profile = request.user.participantprofile
     is_exp = (profile.group == ParticipantProfile.EXPERIMENTAL)
 
-    question_ids = []  # will track the order
-    passed_ids = []  # those that passed on this pass
+    # First-pass (AI) or second-pass (no AI)?
+    exp_pass = request.session.get("experimental_pass", 1)
 
-    # 1) Compile, run & record each
-    for item in submissions:
-        qid = int(item["question_id"])
-        code = item["code"]
-        attempt = int(item["attempt_no"])
+    # Prevent double-counting if the user submits twice (reload/back/etc.)
+    Submission.objects.filter(
+        user=request.user,
+        attempt_no=exp_pass,
+        question_id__in=qids_int,
+    ).delete()
+
+    keep_ids = []
+
+    for qid, code, spent_ms in zip(qids_int, codes, time_ms):
         question = get_object_or_404(Questions, pk=qid)
 
-        # compile & run
         is_correct = False
         harness = (question.harness_code or "").strip()
         if not harness:
-            return JsonResponse({"error": f"Server configuration error: harness_code missing for question {qid}."},
-                                status=500)
+            return JsonResponse(
+                {"error": f"Server configuration error: harness_code missing for question {qid}."},
+                status=500
+            )
 
-        with tempfile.TemporaryDirectory() as tmp:
-            compile_proc = compile_java_sources(tmp, {
-                "Solution.java": code,
-                "Main.java": harness,
-            })
-            if compile_proc.returncode == 0:
-                if question.question_type == "IO":
-                    is_correct = all(
-                        execute_java_file("Main", tmp, input_data=tc.test_input).strip()
-                        == tc.expected_output.strip()
-                        for tc in question.test_cases.all()
-                    )
-        print(f"[DEBUG]    → is_correct = {is_correct}")
-        # record in DB
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                compile_proc = compile_java_sources(tmp, {
+                    "Solution.java": code,
+                    "Main.java": harness,
+                })
+
+                if compile_proc.returncode == 0:
+                    if question.question_type == "IO":
+                        is_correct = all(
+                            execute_java_file("Main", tmp, input_data=tc.test_input).strip()
+                            == tc.expected_output.strip()
+                            for tc in question.test_cases.all()
+                        )
+                    else:
+                        is_correct = False
+                else:
+                    is_correct = False
+        except Exception as e:
+            print("experimental submit_all grading error:", repr(e))
+            is_correct = False
+
         Submission.objects.create(
-            user=user,
+            user=request.user,
             question=question,
-            attempt_no=attempt,
-            used_ai=(is_exp and attempt == 1),
-            is_correct=is_correct
+            attempt_no=exp_pass,
+            used_ai=(is_exp and exp_pass == 1),
+            is_correct=is_correct,
+            time_spent_ms=spent_ms,
         )
 
-        # update counters & passed_ids
-        if attempt == 1:
-            if is_correct:
-                profile.first_attempt_correct += 1
-                passed_ids.append(qid)
-            else:
-                profile.first_attempt_incorrect += 1
-        else:
-            # second pass only increments second_attempt_correct
-            if is_correct and is_exp:
-                profile.second_attempt_correct += 1
-    print(f"[DEBUG] final passed_ids = {passed_ids}")
+        if exp_pass == 1 and is_correct:
+            keep_ids.append(question.id)
+
+    # Recompute counters from DB (idempotent + also works for pass 2)
+    profile.first_attempt_correct = Submission.objects.filter(
+        user=request.user, attempt_no=1, is_correct=True
+    ).count()
+    profile.first_attempt_incorrect = Submission.objects.filter(
+        user=request.user, attempt_no=1, is_correct=False
+    ).count()
+
+    if hasattr(profile, "second_attempt_correct"):
+        profile.second_attempt_correct = Submission.objects.filter(
+            user=request.user, attempt_no=2, is_correct=True
+        ).count()
+
+    if hasattr(profile, "second_attempt_incorrect"):
+        profile.second_attempt_incorrect = Submission.objects.filter(
+            user=request.user, attempt_no=2, is_correct=False
+        ).count()
+
     profile.save()
 
-    # 2) Decide what comes next
-    # — experimental, first pass
-    # make absolutely sure the client-sent attempt_no is an int
-    exp_pass_num = request.session.get("experimental_pass", 1)
+    if is_exp:
+        if exp_pass == 1:
+            # For the experimental flow, pass 2 should replay the questions they got CORRECT on pass 1
+            request.session["experimental_keep_ids"] = keep_ids
+            request.session["experimental_pass"] = 2
+            request.session.modified = True
 
-    if is_exp and exp_pass_num == 1:
-        # no question passed on first attempt→ skip straight to thank you
-        if not passed_ids:
-            print("[DEBUG] No passed_ids → redirecting to thank-you")
+            # If they didn't get any correct on pass 1, there is nothing to replay; skip forward
+            if not keep_ids:
+                request.user.is_active = False
+                request.user.save(update_fields=["is_active"])
+                logout(request)  # end the current session
+                return JsonResponse({
+                    "next": "thank-you",
+                    "redirect_url": reverse("thank-you")
+                })
+
             return JsonResponse({
-                "status": "redirect",
-                "redirect_url": reverse("thank-you")
+                "next": "second-pass",
+                "redirect_url": reverse("experimental_app:editor")
             })
 
-        # ★ store them in session for the second pass ★
-        request.session['experimental_pass'] = 2
-        request.session['experimental_keep_ids'] = passed_ids
-        request.session.modified = True
-
-        # some passed → do second-pass on those only
+        profile.both_ai_and_non_ai_portion_of_code_assessment_completed = True
+        profile.save()
         return JsonResponse({
-            "status": "next",
-            "next": "second-pass",
-            "keep_ids": passed_ids,
-            "redirect_url": reverse("experimental_app:editor")
+            "status": "redirect",
+            "redirect_url": reverse("post-assessment")
         })
 
-    # — Done with second pass
-    profile.both_ai_and_non_ai_portion_of_code_assessment_completed = True
-    profile.save()
-    return JsonResponse({
-        "status": "redirect",
-        "redirect_url": reverse("post-assessment")
-    })
+    return HttpResponse("An unexpected error has occurred")
 
 
 DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.1-codex-mini")
-DEFAULT_MAX_OUT = int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "400"))
+DEFAULT_MAX_OUT = int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "800"))
 
-# Your existing “hints-mode” style prompt (keep it general for your study)
-HINTS_SYSTEM_PROMPT = """
-You are a programming tutor in a research study. Your goal is to help the student learn and retain problem-solving skills.
-
-Core rules:
-- Do NOT provide a complete solution, full program, or a full method/function that would solve the task end-to-end.
-- Avoid copy-pastable code. If you include code-like text, limit to small illustrative snippets (≤10 lines) and never enough to fully solve the task.
-- Focus on reasoning: algorithm idea, invariants, complexity, and how to verify correctness.
-- Be concrete; do not invent requirements. If details are missing, state a reasonable assumption briefly and proceed.
-
-Tutoring behavior (reduce offloading):
-- Prefer hints, guiding questions, and partial scaffolds over finished answers.
-- Encourage retrieval practice: end with 1–2 short questions that force the student to choose the next step.
-- If the student asks for “the answer” or “full code,” redirect to a plan + a small example snippet and ask them to implement the rest.
-
-Debugging protocol (when the student shows code/errors):
-- First explain the likely cause in plain language.
-- Then give the minimal fix (steps or a small snippet ≤10 lines).
-- Then give quick verification steps (how to test/what output should change).
-- Do not rewrite the entire solution.
-
-Response style:
-- Default: answer directly in 2–8 sentences or concise bullets. Do not force a template.
-- Use the structured “Hints Mode” format ONLY when the student asks for hints/approach/plan or seems stuck conceptually.
-
-Hints Mode format:
-1) Approach (2–5 bullets)
-2) Edge cases (1–4 bullets)
-3) Self-check questions (2–5 bullets)
-""".strip()
+HINTS_SYSTEM_PROMPT = """You are an expert programming assistant. When given a coding problem, produce a correct 
+solution and be explicit about assumptions. The target language produced will always be Java (remember to include 
+correct imports). Output code for a single public class Solution and include only the methods needed. Do not invent 
+constraints; rely only on what the user provided. If something is ambiguous, ask a short clarifying question first. 
+After the solution, include reasoning.
+Java requirement: Use proper generics (no raw types). Any collections must be parameterized (e.g., Deque<Integer>), and code must compile in Java and formatted in java.
+"""
 
 
 @require_POST

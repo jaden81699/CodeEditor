@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="ai-telemetry-url" content="{% url 'ai_telemetry' %}">
     <meta name="ai-respond-url" content="{% url 'ai_respond' %}">
-    <script>window.aiContext = {attemptNo: {{ attempt_no|default:1 }}, questionId: null};</script>
+    <script>document.documentElement.classList.add("js"); window.aiContext = {attemptNo: {{ attempt_no|default:1 }}, questionId: null};</script>
     <title>AI-Assisted Programming</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <!-- Bootstrap CSS -->
@@ -278,6 +278,31 @@
         }
 
 
+
+        /* AI typing label (so dots don't feel "stuck") */
+        .typing-wrap {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .typing-label {
+            font-size: 0.92rem;
+            opacity: .85;
+        }
+
+        /* Bigger (auto-resizing) input box */
+        #user-input {
+            resize: none;
+            min-height: 54px;
+            max-height: 180px;
+            overflow-y: auto;
+        }
+
+        /* Question pagination (show one question at a time when JS is enabled) */
+        html.js .question-page { display: none; }
+        html.js .question-page.active { display: block; }
+
     </style>
 </head>
 
@@ -298,7 +323,7 @@
 
             <div class="d-flex align-items-center">
                 {# in editor.html, where you render your logout button #}
-{#                <a href="{% url 'logout' %}" class="btn btn-danger btn-sm mx-2">Logout</a>#}
+                {#                <a href="{% url 'logout' %}" class="btn btn-danger btn-sm mx-2">Logout</a>#}
 
                 <!-- Submit Code Button: normal submission that reloads the page -->
                 <button
@@ -323,12 +348,22 @@
                     <!-- Compiler column -->
                     <div class="col-12 {% if show_ai %}col-xl-7{% else %}col-xl-12{% endif %}">
                         <div class="card card-fill shadow-sm" id="compiler-card">
-                            <div class="card-header bg-primary text-white">Question Set</div>
+                            <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                                <div class="d-flex flex-column">
+                                    <span class="fw-semibold">Question Set</span>
+                                    <small id="q-counter" class="opacity-75"></small>
+                                </div>
+                                <div class="d-flex align-items-center gap-2">
+                                    <button type="button" class="btn btn-sm btn-outline-light" id="q-prev">Prev</button>
+                                    <button type="button" class="btn btn-sm btn-outline-light" id="q-next">Next</button>
+                                </div>
+                            </div>
                             <div class="card-body">
                                 <div class="container py-2">
                                     <div style="display:none">{% csrf_token %}</div>
 
                                     {% for question in questions %}
+                                        <div class="question-page{% if forloop.first %} active{% endif %}" data-question-id="{{ question.id }}" data-index="{{ forloop.counter0 }}">
                                         <form class="question-submit-form" method="POST"
                                               action="{% url 'control_app:submit-all' %}">
                                             {% csrf_token %}
@@ -339,10 +374,10 @@
 
                                             <div class="card mb-4 shadow-sm">
                                                 <div class="card-header bg-secondary text-white">
-                                                    Question {{ forloop.counter }}: {{ question.question_name }}</div>
+                                                   <b> Question {{ forloop.counter }}: {{ question.question_name }}</b></div>
                                                 <div class="card-body">
                                                     <div class="question-text"
-                                                         style="white-space: pre-wrap">{{ question.question_string }}</div>
+                                                         style="white-space: pre-wrap">{{ question.question_string|safe }}</div>
 
                                                     <div id="editor-{{ question.id }}"
                                                          class="monaco-editor-container mb-3"
@@ -370,6 +405,7 @@
                                                 </div>
                                             </div>
                                         </form>
+                                        </div>
                                     {% endfor %}
                                 </div>
                             </div>
@@ -673,72 +709,94 @@
     }
 
 
-    // 1) Monaco editors
-    function initMonacoEditors() {
-        window.editors = {};
-        require(['vs/editor/editor.main'], () => {
-            if (!window.__javaCompletionsRegistered && typeof registerJavaCompletions === 'function') {
-                try {
-                    registerJavaCompletions();     // ✅ no args (uses global monaco)
-                    // or: registerJavaCompletions(monaco);  // ✅ also fine
-                    window.__javaCompletionsRegistered = true;
-                } catch (e) {
-                    console.error("Java completions failed to register:", e);
-                }
-            }
-            document.querySelectorAll('.monaco-editor-container').forEach(container => {
-                const qid = container.dataset.questionId;
-                const starter = container.dataset.starterCode || '';
-                const key = editorStorageKey(qid);
 
-                // hydrate from sessionStorage if present, else fallback to starter
-                const saved = sessionStorage.getItem(key);
-                const initialValue = (saved !== null) ? saved : starter;
+    // 1) Monaco editors (lazy init; important when non-active questions are display:none)
+    function setupMonacoEditors() {
+        window.editors = window.editors || {};
+        window.__editorInitPromises = window.__editorInitPromises || {};
 
-                const editor = monaco.editor.create(container, {
-                    value: initialValue,
-                    language: 'java',
-                    theme: 'vs-dark',
-                    automaticLayout: true
+        window.ensureEditorForQuestion = window.ensureEditorForQuestion || function ensureEditorForQuestion(qid) {
+            qid = String(qid);
+
+            if (window.editors[qid]) return Promise.resolve(window.editors[qid]);
+            if (window.__editorInitPromises[qid]) return window.__editorInitPromises[qid];
+
+            const container = document.querySelector(`.monaco-editor-container[data-question-id="${qid}"]`);
+            if (!container) return Promise.reject(new Error(`Editor container not found for question_id=${qid}`));
+
+            window.__editorInitPromises[qid] = new Promise((resolve, reject) => {
+                require(['vs/editor/editor.main'], () => {
+                    try {
+                        if (!window.__javaCompletionsRegistered && typeof registerJavaCompletions === 'function') {
+                            try {
+                                registerJavaCompletions(); // uses global monaco
+                                window.__javaCompletionsRegistered = true;
+                            } catch (e) {
+                                console.error("Java completions failed to register:", e);
+                            }
+                        }
+
+                        const starter = container.dataset.starterCode || '';
+                        const key = editorStorageKey(qid);
+                        const posKey = key + ':pos';
+
+                        // Hydrate from localStorage (preferred), then sessionStorage (legacy), else starter
+                        const saved = localStorage.getItem(key);
+                        const legacySaved = (saved === null) ? sessionStorage.getItem(key) : null;
+                        const initialValue = (saved !== null) ? saved : (legacySaved !== null ? legacySaved : starter);
+
+                        const editor = monaco.editor.create(container, {
+                            value: initialValue,
+                            language: 'java',
+                            theme: 'vs-dark',
+                            automaticLayout: true
+                        });
+
+                        window.editors[qid] = editor;
+
+                        // autosave (debounced) whenever content changes
+                        const save = debounce(() => {
+                            try {
+                                localStorage.setItem(key, editor.getValue());
+                            } catch (e) {
+                                console.warn('Save failed:', e);
+                            }
+                        }, 400);
+                        editor.onDidChangeModelContent(save);
+
+                        // optional: restore cursor/scroll position too
+                        const savedPos = localStorage.getItem(posKey) || sessionStorage.getItem(posKey);
+                        if (savedPos) {
+                            try {
+                                const {position, scrollTop} = JSON.parse(savedPos);
+                                if (position) editor.setPosition(position);
+                                if (typeof scrollTop === 'number') editor.setScrollTop(scrollTop);
+                            } catch {}
+                        }
+
+                        editor.onDidChangeCursorPosition(debounce(() => {
+                            try {
+                                localStorage.setItem(posKey, JSON.stringify({
+                                    position: editor.getPosition(),
+                                    scrollTop: editor.getScrollTop()
+                                }));
+                            } catch {}
+                        }, 400));
+
+                        // If you still want diagnostics, keep it incremental
+                        if (typeof initManualDiagnostics === 'function') {
+                            try { initManualDiagnostics(window.editors); } catch (e) { console.warn(e); }
+                        }
+
+                        resolve(editor);
+                    } catch (err) {
+                        reject(err);
+                    }
                 });
-                window.editors[qid] = editor;
-
-                // autosave (debounced) whenever content changes
-                const save = debounce(() => {
-                    try {
-                        sessionStorage.setItem(key, editor.getValue());
-                    } catch (e) {
-                        // sessionStorage quota errors etc.
-                        console.warn('Save failed:', e);
-                    }
-                }, 400);
-
-
-                editor.onDidChangeModelContent(save);
-
-                // optional: restore cursor/scroll position too
-                const posKey = key + ':pos';
-                const savedPos = sessionStorage.getItem(posKey);
-                if (savedPos) {
-                    try {
-                        const {position, scrollTop} = JSON.parse(savedPos);
-                        if (position) editor.setPosition(position);
-                        if (typeof scrollTop === 'number') editor.setScrollTop(scrollTop);
-                    } catch {
-                    }
-                }
-                editor.onDidChangeCursorPosition(debounce(() => {
-                    sessionStorage.setItem(posKey, JSON.stringify({
-                        position: editor.getPosition(),
-                        scrollTop: editor.getScrollTop()
-                    }));
-                }, 400));
             });
 
-        });
-        if (typeof initManualDiagnostics === 'function') {
-            initManualDiagnostics(window.editors);
-        }
+            return window.__editorInitPromises[qid];
+        };
     }
 
     // small generic debounce
@@ -750,7 +808,25 @@
         };
     }
 
-    // 2) “Run Code” wiring (event delegation)
+    function getCodeForQuestion(qid) {
+        const key = editorStorageKey(qid);
+        const container = document.querySelector(`.monaco-editor-container[data-question-id="${qid}"]`);
+        const starter = container?.dataset?.starterCode || "";
+
+        const ed = window.editors?.[qid];
+        if (ed?.getValue) return ed.getValue();
+
+        // If the editor hasn't been initialized yet, use saved draft if present, else starter.
+        const saved = localStorage.getItem(key);
+        if (saved !== null) return saved;
+
+        const legacy = sessionStorage.getItem(key);
+        if (legacy !== null) return legacy;
+
+        return starter;
+    }
+
+    // 2) “Run Code” wiring (event delegation; ensures Monaco exists for the active question)
     function initRunButtons() {
         document.addEventListener("click", async (e) => {
             const btn = e.target.closest(".run-code-btn");
@@ -758,71 +834,99 @@
 
             const qid = btn.dataset.questionId;
             const attemptNo = btn.dataset.attemptNo;
-            const editor = window.editors?.[qid];
-            const code = editor?.getValue?.() || "";
+
+            let editor = window.editors?.[qid] || null;
+            if (!editor && typeof window.ensureEditorForQuestion === "function") {
+                try {
+                    editor = await window.ensureEditorForQuestion(qid);
+                } catch (err) {
+                    console.warn(err);
+                }
+            }
+
+            const code = editor?.getValue?.() ?? getCodeForQuestion(qid);
             const out = document.getElementById(`output-${qid}`);
             const cmp = document.getElementById(`comparison-${qid}`);
             if (!out || !cmp) return;
 
-            out.innerHTML = "";
-            cmp.innerHTML = "";
+            clearPreviousOutput(out, cmp);
 
             if (!code.includes("class Solution")) {
-                out.innerHTML = `<pre class="compiler-error">Error: code must define a class named 'Solution'.</pre>`;
+                displayError(out, "Error: code must define a class named 'Solution'.");
                 return;
             }
 
-            let dots = "";
-            const typing = setInterval(() => {
-                dots = dots.length < 3 ? dots + "." : "";
-                out.innerText = "Compiling" + dots;
-            }, 500);
+            const typingInterval = displayTypingIndicator(out);
 
             try {
                 const resp = await sendCodeToServer(code, qid, attemptNo);
                 const data = await resp.json();
-                clearInterval(typing);
+                clearInterval(typingInterval);
                 processServerResponse(data, out, cmp);
             } catch (err) {
-                clearInterval(typing);
+                clearInterval(typingInterval);
                 console.error(err);
-                out.innerHTML = `<pre class="compiler-error">An error occurred while running your code.</pre>`;
+                displayError(out, "An error occurred while running your code.");
             }
         });
     }
 
-    // 3) Submit-all
+    // 3) Submit-all (collects every question, including ones never visited)
     function initSubmitAll() {
         const btn = document.getElementById("submit-all");
         if (!btn) return;
+
         btn.addEventListener("click", async () => {
+            // Capture the last active slice before we read timings
+            if (window.timingFlushActive) window.timingFlushActive();
+
             const forms = document.querySelectorAll(".question-submit-form");
             btn.disabled = true;
             btn.textContent = "Submitting…";
 
             const data = new URLSearchParams();
+
             forms.forEach(form => {
-                const qid = form.querySelector("input[name='question_id']").value;
-                const code = window.editors[qid]?.getValue?.() || "";
+                const qid = form.querySelector("input[name='question_id']")?.value;
+                if (!qid) return;
+
+                const code = getCodeForQuestion(qid);
+
                 data.append("question_id", qid);
                 data.append("code", code);
-            });
-            data.append("csrfmiddlewaretoken", document.querySelector("[name=csrfmiddlewaretoken]").value);
 
-            const resp = await fetch("{% url 'control_app:submit-all' %}", {
-                method: "POST", credentials: "same-origin",
-                headers: {"Content-Type": "application/x-www-form-urlencoded"},
-                body: data
+                const spentMs = (window.timingGetMs ? window.timingGetMs(qid) : 0);
+                data.append("time_spent_ms", String(spentMs));
             });
-            const json = await resp.json();
-            if (json.redirect_url) {
-                clearDraftsForCurrentAttempt(); // ✅ clear only after success
-                window.location.href = json.redirect_url;
-                return;
+
+            data.append("csrfmiddlewaretoken", document.querySelector("[name=csrfmiddlewaretoken]")?.value || "");
+
+            try {
+                const resp = await fetch("{% url 'control_app:submit-all' %}", {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: {"Content-Type": "application/x-www-form-urlencoded"},
+                    body: data
+                });
+
+                const json = await resp.json();
+
+                if (json.redirect_url) {
+                    clearDraftsForCurrentAttempt(); // ✅ clear only after success
+                    window.location.href = json.redirect_url;
+                    return;
+                }
+
+                window.location.href = "{% url 'control_app:editor' %}";
+            } catch (e) {
+                console.error(e);
+                // Best-effort: re-enable so user can try again
+                btn.disabled = false;
+                btn.textContent = "Submit All";
             }
-            window.location.href = "{% url 'control_app:editor' %}";
         });
     }
+
 
     // 4) AI UI (toast, modal, pulse, telemetry)
     function initAiUi() {
@@ -849,7 +953,7 @@
         sizeWorkspace();
         window.addEventListener('resize', sizeWorkspace);
 
-        initMonacoEditors();
+        setupMonacoEditors();
         initRunButtons();
         initSubmitAll();
         initAiUi();
@@ -860,23 +964,42 @@
 
 <!-- Helper function for AI responses (formatting code blocks, bullet lists, numbered lists, etc.) -->
 <script type="text/javascript">
-    function formatAIResponse(text) {
-        return text.replace(/```java([\s\S]*?)```/g, (_, code) =>
-            `<pre><code class="language-java">${code.trim()}</code></pre>`
-        ).split("\n").map(line => processListFormatting(line)).join("\n");
+  function processListFormatting(line) {
+    if (/^\s*([-*+])\s+/.test(line)) return wrapInList(line, "ul");
+    if (/^\s*\d+\.\s+/.test(line)) return wrapInList(line, "ol");
+    return line;
+  }
+
+  function wrapInList(line, type) {
+    const content = line.replace(/^\s*([-*+]|\d+\.)\s+/, "");
+    return `<${type}><li>${content}</li></${type}>`;
+  }
+
+  function formatTextBlock(block) {
+    // Escape everything, then apply lightweight list formatting.
+    const lines = escapeHtml(String(block)).split("\n");
+    return lines.map(processListFormatting).join("<br>");
+  }
+
+  function formatAIResponse(text) {
+    // Render assistant text safely; keep code blocks intact.
+    const re = /```(?:java)?\s*([\s\S]*?)```/g;
+    let out = "";
+    let last = 0;
+    let match;
+
+    while ((match = re.exec(text)) !== null) {
+      out += formatTextBlock(text.slice(last, match.index));
+      const code = match[1] ?? "";
+      out += `<pre><code class="language-java">${escapeHtml(code.trim())}</code></pre>`;
+      last = re.lastIndex;
     }
 
-    function processListFormatting(line) {
-        if (/^\s*([-*+])\s+/.test(line)) return wrapInList(line, "ul");
-        if (/^\s*\d+\.\s+/.test(line)) return wrapInList(line, "ol");
-        return line;
-    }
-
-    function wrapInList(line, type) {
-        let content = line.replace(/^\s*([-*+]|\d+\.)\s+/, "");
-        return `<${type}><li>${content}</li></${type}>`;
-    }
+    out += formatTextBlock(text.slice(last));
+    return out;
+  }
 </script>
+
 
 <script>
     // Force a reload when page is restored from BFCache
@@ -896,8 +1019,10 @@
             const key = editorStorageKey(qid);
             sessionStorage.removeItem(key);
             sessionStorage.removeItem(key + ":pos");
-            localStorage.removeItem(key);       // if you haven’t migrated off localStorage yet
+            sessionStorage.removeItem(key + ":time_ms");
+            localStorage.removeItem(key);
             localStorage.removeItem(key + ":pos");
+            localStorage.removeItem(key + ":time_ms");
         });
     }
 
@@ -1143,8 +1268,176 @@
         const attempt = (window.aiContext?.attemptNo) || 1; // you already expose this
         return `monaco:${page}:attempt${attempt}:q${qid}:v1`;
     }
+
 </script>
 
+<script>
+    // --- Per-question timing (active time while a question is visible) ---
+    // Stored alongside drafts using the same base key (per page + attempt + question_id).
+    function timingStorageKey(qid) {
+        return editorStorageKey(qid) + ':time_ms';
+    }
+
+    function timingGetMs(qid) {
+        const raw = localStorage.getItem(timingStorageKey(qid));
+        const n = parseInt(raw || '0', 10);
+        return Number.isFinite(n) && n > 0 ? n : 0;
+    }
+
+    function timingSetMs(qid, ms) {
+        const v = Math.max(0, Math.round(ms || 0));
+        try {
+            localStorage.setItem(timingStorageKey(qid), String(v));
+        } catch (e) {
+            // If storage is full/blocked, we still want the session to work.
+            console.warn('Timing save failed:', e);
+        }
+    }
+
+    function timingAddMs(qid, deltaMs) {
+        const add = Math.max(0, Math.round(deltaMs || 0));
+        timingSetMs(qid, timingGetMs(qid) + add);
+    }
+
+    // Active timing state
+    window.__questionTiming = window.__questionTiming || {
+        activeQid: null,
+        segmentStart: null
+    };
+
+    function timingStopSegment() {
+        const st = window.__questionTiming;
+        if (!st.activeQid || st.segmentStart === null) return;
+        const delta = performance.now() - st.segmentStart;
+        timingAddMs(st.activeQid, delta);
+        st.segmentStart = null;
+    }
+
+    function timingStartSegment() {
+        const st = window.__questionTiming;
+        if (!st.activeQid) return;
+        if (document.hidden) return;
+        if (st.segmentStart !== null) return;
+        st.segmentStart = performance.now();
+    }
+
+    // Call this whenever pagination switches the active question
+    function timingSetActiveQuestion(qid) {
+        const st = window.__questionTiming;
+        qid = String(qid);
+
+        if (st.activeQid !== qid) {
+            timingStopSegment();
+            st.activeQid = qid;
+            st.segmentStart = null;
+        }
+        timingStartSegment();
+    }
+
+    // Call this right before Submit All (captures the last active slice)
+    function timingFlushActive() {
+        timingStopSegment();
+    }
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) timingStopSegment();
+        else timingStartSegment();
+    });
+
+    window.addEventListener('beforeunload', () => {
+        timingStopSegment();
+    });
+
+    // Expose helpers for other scripts
+    window.timingSetActiveQuestion = timingSetActiveQuestion;
+    window.timingFlushActive = timingFlushActive;
+    window.timingGetMs = timingGetMs;
+</script>
+
+<script>
+    // Question pagination: show one question at a time, with Prev/Next + "Question X of N"
+    document.addEventListener('DOMContentLoaded', () => {
+        const pages = Array.from(document.querySelectorAll('.question-page'));
+        if (!pages.length) return;
+
+        const prevBtn = document.getElementById('q-prev');
+        const nextBtn = document.getElementById('q-next');
+        const counterEl = document.getElementById('q-counter');
+
+        const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+
+        // Optional deep-link: ?q= (1-based)
+        const params = new URLSearchParams(window.location.search);
+        let idx = clamp((parseInt(params.get('q') || '1', 10) - 1) || 0, 0, pages.length - 1);
+
+        function layoutEditorFor(qid) {
+            if (typeof window.ensureEditorForQuestion !== 'function') return;
+
+            window.ensureEditorForQuestion(qid)
+                .then(ed => {
+                    if (ed && typeof ed.layout === 'function') {
+                        setTimeout(() => ed.layout(), 0);
+                        setTimeout(() => ed.layout(), 300);
+                    }
+                })
+                .catch(err => console.warn('Editor init/layout failed:', err));
+        }
+
+        function setAIQuestion(qid) {
+            try {
+                window.aiContext = window.aiContext || {};
+                window.aiContext.questionId = qid;
+
+                // keep the AI client in sync (used for telemetry / context)
+                if (window.webllm && typeof window.webllm.setAIContext === 'function') {
+                    window.webllm.setAIContext({
+                        attemptNo: window.aiContext.attemptNo ?? 1,
+                        questionId: qid
+                    });
+                }
+            } catch (e) {
+                console.warn('setAIQuestion failed:', e);
+            }
+        }
+
+        function render() {
+            pages.forEach((p, i) => p.classList.toggle('active', i === idx));
+
+            const current = idx + 1;
+            const total = pages.length;
+
+            if (counterEl) counterEl.textContent = `Question ${current} of ${total}`;
+            if (prevBtn) prevBtn.disabled = (idx === 0);
+            if (nextBtn) nextBtn.disabled = (idx === total - 1);
+
+            const qid = pages[idx].dataset.questionId;
+            setAIQuestion(qid);
+            if (window.timingSetActiveQuestion) window.timingSetActiveQuestion(qid);
+
+            // Init + layout Monaco once the container is visible
+            layoutEditorFor(qid);
+
+            // Keep URL in sync (optional)
+            const url = new URL(window.location.href);
+            url.searchParams.set('q', String(current));
+            history.replaceState(null, '', url);
+        }
+
+        prevBtn && prevBtn.addEventListener('click', () => {
+            idx = clamp(idx - 1, 0, pages.length - 1);
+            render();
+            window.scrollTo({top: 0, behavior: 'smooth'});
+        });
+
+        nextBtn && nextBtn.addEventListener('click', () => {
+            idx = clamp(idx + 1, 0, pages.length - 1);
+            render();
+            window.scrollTo({top: 0, behavior: 'smooth'});
+        });
+
+        render();
+    });
+</script>
 
 </body>
 </html>

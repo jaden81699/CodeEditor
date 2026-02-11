@@ -7,7 +7,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="ai-telemetry-url" content="{% url 'ai_telemetry' %}">
     <meta name="ai-respond-url" content="{% url 'ai_respond' %}">
-    <script>window.aiContext = {attemptNo: {{ exp_pass|default:1 }}, questionId: null};</script>
+    <script>document.documentElement.classList.add("js"); window.aiContext = {attemptNo: {{ exp_pass|default:1 }}, questionId: null};</script>
     <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
           integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
@@ -295,7 +295,12 @@
             overflow-y: auto;
         }
 
-    </style>
+
+        /* Question pagination (show one question at a time when JS is enabled) */
+        html.js .question-page { display: none; }
+        html.js .question-page.active { display: block; }
+
+</style>
 </head>
 <body>
 <!-- Navigation Bar -->
@@ -339,26 +344,36 @@
                     <!-- Compiler column -->
                     <div class="col-12 {% if show_ai %}col-xl-7{% else %}col-xl-12{% endif %}">
                         <div class="card card-fill shadow-sm" id="compiler-card">
-                            <div class="card-header bg-primary text-white">Question Set</div>
+                            <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+    <div class="d-flex flex-column">
+        <span class="fw-semibold">Question Set</span>
+        <small id="q-counter" class="opacity-75"></small>
+        <small id="q-timer" class="opacity-75" hidden="hidden"></small>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+        <button type="button" class="btn btn-sm btn-outline-light" id="q-prev">Prev</button>
+        <button type="button" class="btn btn-sm btn-outline-light" id="q-next">Next</button>
+    </div>
+</div>
                             <div class="card-body">
                                 <div class="container py-2">
                                     <div style="display:none">{% csrf_token %}</div>
 
                                     {% for question in questions %}
+                                        <div class="question-page{% if forloop.first %} active{% endif %}" data-question-id="{{ question.id }}" data-index="{{ forloop.counter0 }}">
                                         <form class="question-submit-form" method="POST"
-                                              action="{% url 'control_app:submit-all' %}">
+                                              action="{% url 'experimental_app:submit-all' %}">
                                             {% csrf_token %}
                                             <input type="hidden" name="question_id" value="{{ question.id }}">
                                             <input type="hidden" name="code" class="code-input" value="">
-                                            <input type="hidden" name="attempt_no"
-                                                   value="{% if is_control and control_pass == 2 %}2{% else %}1{% endif %}"/>
+                                            <input type="hidden" name="attempt_no" value="{{ exp_pass|default:1 }}"/>
 
                                             <div class="card mb-4 shadow-sm">
                                                 <div class="card-header bg-secondary text-white">
-                                                    Question {{ forloop.counter }}: {{ question.question_name }}</div>
+                                                    <b>Question {{ forloop.counter }}: {{ question.question_name }}</b></div>
                                                 <div class="card-body">
                                                     <div class="question-text"
-                                                         style="white-space: pre-wrap">{{ question.question_string }}</div>
+                                                         style="white-space: pre-wrap">{{ question.question_string|safe}}</div>
 
                                                     <div id="editor-{{ question.id }}"
                                                          class="monaco-editor-container mb-3"
@@ -386,6 +401,7 @@
                                                 </div>
                                             </div>
                                         </form>
+                                        </div>
                                     {% endfor %}
                                 </div>
                             </div>
@@ -557,10 +573,27 @@
 
 <!-- Helper function for AI responses (formatting code blocks, bullet lists, numbered lists, etc.) -->
 <script type="text/javascript">
+    // Safely render assistant output (prevents Java generics like <Integer> from being eaten by HTML)
     function formatAIResponse(text) {
-        return text.replace(/```java([\s\S]*?)```/g, (_, code) =>
-            `<pre><code class="language-java">${code.trim()}</code></pre>`
-        ).split("\n").map(line => processListFormatting(line)).join("\n");
+        const re = /```(?:java)?\s*([\s\S]*?)```/g;
+        let out = "";
+        let last = 0;
+        let match;
+
+        while ((match = re.exec(text)) !== null) {
+            out += formatTextBlock(text.slice(last, match.index));
+            const code = match[1] ?? "";
+            out += `<pre><code class="language-java">${escapeHtml(code.trim())}</code></pre>`;
+            last = re.lastIndex;
+        }
+
+        out += formatTextBlock(text.slice(last));
+        return out;
+    }
+
+    function formatTextBlock(block) {
+        const lines = escapeHtml(String(block ?? "")).split("\n");
+        return lines.map(processListFormatting).join("<br>");
     }
 
     function processListFormatting(line) {
@@ -570,7 +603,7 @@
     }
 
     function wrapInList(line, type) {
-        let content = line.replace(/^\s*([-*+]|\d+\.)\s+/, "");
+        const content = line.replace(/^\s*([-*+]|\d+\.)\s+/, "");
         return `<${type}><li>${content}</li></${type}>`;
     }
 </script>
@@ -953,7 +986,13 @@
         btn.addEventListener("click", async () => {
             const qid = btn.dataset.questionId;
             const attemptNo = btn.dataset.attemptNo;     // ← pull it here
-            const editor = window.editors[qid];
+            const editor = (typeof window.ensureEditorForQuestion === 'function')
+                ? await window.ensureEditorForQuestion(qid)
+                : (window.editors ? window.editors[qid] : null);
+            if (!editor) {
+                displayError(document.getElementById(`output-${qid}`), 'Editor not initialized. Please try again.');
+                return;
+            }
             const code = editor.getValue();
             const out = document.getElementById(`output-${qid}`);
             const cmp = document.getElementById(`comparison-${qid}`);
@@ -988,57 +1027,92 @@
 
     const btn = document.getElementById("submit-all")
     btn.addEventListener("click", async () => {
+        const originalLabel = btn.textContent;
         btn.disabled = true;
         btn.textContent = "Submitting…";
-        // 1️⃣ collect all three submissions
-        const attemptNo = {{ exp_pass }};
-        const submissions = Array.from(
-            document.querySelectorAll(".monaco-editor-container")
-        ).map(el => {
-            const qid = el.dataset.questionId;
-            return {
-                question_id: qid,
-                code: window.editors[qid].getValue(),
-                attempt_no: attemptNo
-            };
-        });
 
-        // 2️⃣ post them as JSON
-        const resp = await fetch("{% url 'experimental_app:submit-all' %}", {
-            method: "POST",
-            credentials: "same-origin",
-            headers: {
-                "Content-Type": "application/json",
-                "X-CSRFToken": "{{ csrf_token }}"
-            },
-            body: JSON.stringify({submissions})
-        });
+        let navigating = false;
 
-        if (!resp.ok) {
-            console.error("submit-all failed:", resp.statusText);
-            return;
-        }
+        try {
+            // Make sure we record time for the currently-visible question before collecting totals
+            try { window.__questionTime?.flush(); } catch (e) {}
 
-        const data = await resp.json();
+            // 1️⃣ collect submissions for *all* questions (even unvisited ones)
+            const attemptNo = {{ exp_pass|default:1 }};
+            const submissions = Array.from(
+                document.querySelectorAll(".monaco-editor-container")
+            ).map(el => {
+                const qid = el.dataset.questionId;
+                return {
+                    question_id: qid,
+                    code: (window.editors && window.editors[qid]
+                        ? window.editors[qid].getValue()
+                        : (localStorage.getItem(editorStorageKey(qid)) ?? (el.dataset.starterCode || ''))),
+                    attempt_no: attemptNo,
+                    time_spent_ms: (window.__questionTime ? window.__questionTime.getLiveMs(qid) : 0)
+                };
+            });
 
-        // ✅ clear drafts for this page/attempt before leaving
-        document.querySelectorAll(".monaco-editor-container").forEach(el => {
-            clearEditorDraft(el.dataset.questionId);
-        });
+            // 2️⃣ post them as JSON
+            const resp = await fetch("{% url 'experimental_app:submit-all' %}", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-CSRFToken": (document.querySelector('input[name="csrfmiddlewaretoken"]')?.value || '')
+                },
+                body: JSON.stringify({ submissions })
+            });
 
-        // 3️⃣ act on the server’s instructions
-        if (data.status === "redirect") {
-            // either all‐wrong on first pass or second pass
-            window.location = data.redirect_url;
-        } else if (data.status === "next" && data.next === "second-pass") {
-            // at least one passed first, now do second pass on kept ones
-            window.location = data.redirect_url;
-        } else {
+            if (!resp.ok) {
+                const txt = await resp.text().catch(() => "");
+                console.error("submit-all failed:", resp.status, resp.statusText, txt);
+                return;
+            }
+
+            const data = await resp.json();
+
+            // ✅ clear drafts for this page/attempt before leaving
+            document.querySelectorAll(".monaco-editor-container").forEach(el => {
+                clearEditorDraft(el.dataset.questionId);
+            });
+
+            // 3️⃣ act on the server’s instructions
+            // Server responses have varied over time. Support both shapes:
+            //   A) {status:"redirect", redirect_url:"/..."} or {status:"next", next:"second-pass", redirect_url:"/..."}
+            //   B) {next:"second-pass", redirect_url:"/..."}  (no "status")
+            const redirectUrl = data?.redirect_url || data?.redirectUrl || data?.redirect;
+
+            if (redirectUrl) {
+                navigating = true;
+                window.location.assign(redirectUrl);
+                return;
+            }
+
+            // Fallbacks (in case redirect_url is missing)
+            if ((data?.status === "next" || data?.next) && data?.next === "second-pass") {
+                console.warn("submit-all: second-pass requested but redirect_url missing:", data);
+                navigating = true;
+                window.location.reload();
+                return;
+            }
+
             console.error("Unexpected response from submit-all:", data);
+        } catch (err) {
+            console.error("submit-all exception:", err);
+        } finally {
+            // If we didn’t navigate away, restore the button so the user isn’t stuck
+            if (!navigating) {
+                btn.disabled = false;
+                btn.textContent = originalLabel;
+            }
         }
     });
 
-    function navType() {
+
+
+
+function navType() {
         const nav = performance.getEntriesByType?.('navigation')?.[0];
         if (nav?.type) return nav.type; // 'navigate' | 'reload' | 'back_forward'
         // fallback for older browsers:
@@ -1056,23 +1130,6 @@
 
 <!-- Helper function for AI responses (formatting code blocks, bullet lists, numbered lists, etc.) -->
 <script type="text/javascript">
-    function formatAIResponse(text) {
-        return text.replace(/```java([\s\S]*?)```/g, (_, code) =>
-            `<pre><code class="language-java">${code.trim()}</code></pre>`
-        ).split("\n").map(line => processListFormatting(line)).join("\n");
-    }
-
-    function processListFormatting(line) {
-        if (/^\s*([-*+])\s+/.test(line)) return wrapInList(line, "ul");
-        if (/^\s*\d+\.\s+/.test(line)) return wrapInList(line, "ol");
-        return line;
-    }
-
-    function wrapInList(line, type) {
-        let content = line.replace(/^\s*([-*+]|\d+\.)\s+/, "");
-        return `<${type}><li>${content}</li></${type}>`;
-    }
-
     // ---- Draft / localStorage helpers ----
     const attemptNo = window.aiContext?.attemptNo ?? 1;
 
@@ -1082,6 +1139,140 @@
         const stage = window.aiContext?.stageId ?? "default"; // safe fallback
         return `monaco:${page}:stage${stage}:attempt${attemptNo}:q${qid}:v1`;
     }
+
+
+    // ---- Per-question time tracking (pagination-safe) ----
+    // Stores milliseconds spent per question in localStorage.
+    // Keyed by path + stage + attempt + question to avoid collisions (mirrors editorStorageKey scheme).
+    function questionTimeKey(qid) {
+        const page = location.pathname;
+        const stage = window.aiContext?.stageId ?? "default";
+        return `qtime:${page}:stage${stage}:attempt${attemptNo}:q${qid}:ms`;
+    }
+
+    function getQuestionTimeMs(qid) {
+        const k = questionTimeKey(qid);
+        const v = localStorage.getItem(k);
+        const n = parseInt(v || "0", 10);
+        return Number.isFinite(n) && n >= 0 ? n : 0;
+    }
+
+    function addQuestionTimeMs(qid, deltaMs) {
+        if (!qid) return;
+        const k = questionTimeKey(qid);
+        const cur = getQuestionTimeMs(qid);
+        const next = cur + Math.max(0, Math.round(deltaMs || 0));
+        try { localStorage.setItem(k, String(next)); } catch (e) { /* ignore quota */ }
+    }
+
+    function formatMs(ms) {
+        ms = Math.max(0, Math.round(ms || 0));
+        const totalSec = Math.floor(ms / 1000);
+        const m = Math.floor(totalSec / 60);
+        const s = totalSec % 60;
+        return `${m}:${String(s).padStart(2, '0')}`;
+    }
+
+    // Small controller stored on window so pagination + submit-all can share it.
+    window.__questionTime = window.__questionTime || {
+        activeQid: null,
+        activeStartPerf: null,
+        displayEl: null,
+        ticker: null,
+
+        // Persist time accumulated since activeStartPerf (if running)
+        stop() {
+            if (!this.activeQid || this.activeStartPerf == null) return;
+            const delta = performance.now() - this.activeStartPerf;
+            addQuestionTimeMs(this.activeQid, delta);
+            this.activeStartPerf = null;
+        },
+
+        // Set active question (stop old, start new)
+        setActive(qid) {
+            qid = qid ? String(qid) : null;
+            if (this.activeQid === qid && this.activeStartPerf != null) return;
+
+            // Stop old timer first
+            this.stop();
+
+            this.activeQid = qid;
+            if (!qid) return;
+
+            // Start only if page is visible (prevents background tab time inflation)
+            if (document.visibilityState === 'visible') {
+                this.activeStartPerf = performance.now();
+            }
+
+            this.ensureTicker();
+            this.render();
+        },
+
+        // Total time for a question (persisted + live)
+        getLiveMs(qid) {
+            qid = String(qid);
+            let ms = getQuestionTimeMs(qid);
+            if (this.activeQid === qid && this.activeStartPerf != null && document.visibilityState === 'visible') {
+                ms += (performance.now() - this.activeStartPerf);
+            }
+            return Math.round(ms);
+        },
+
+        // Persist and freeze current active time (used before submit / unload)
+        flush() {
+            this.stop();
+            this.render();
+        },
+
+        bindDisplay(el) {
+            this.displayEl = el || null;
+            this.ensureTicker();
+            this.render();
+        },
+
+        render() {
+            if (!this.displayEl) return;
+            if (!this.activeQid) {
+                this.displayEl.textContent = "";
+                return;
+            }
+            const ms = this.getLiveMs(this.activeQid);
+            this.displayEl.textContent = `Time on this question: ${formatMs(ms)}`;
+        },
+
+        ensureTicker() {
+            if (this.ticker) return;
+            // Update once per second so users can see progress (also helps debugging).
+            this.ticker = setInterval(() => {
+                if (document.visibilityState !== 'visible') return;
+                this.render();
+            }, 1000);
+        }
+    };
+
+    // Pause/resume timer on visibility changes
+    document.addEventListener('visibilitychange', () => {
+        try {
+            if (!window.__questionTime) return;
+            if (document.visibilityState === 'hidden') {
+                window.__questionTime.stop();
+            } else {
+                // resume for active question
+                if (window.__questionTime.activeQid && window.__questionTime.activeStartPerf == null) {
+                    window.__questionTime.activeStartPerf = performance.now();
+                }
+            }
+            window.__questionTime.render();
+        } catch {}
+    });
+
+    // Persist time on pagehide/unload
+    window.addEventListener('pagehide', () => {
+        try { window.__questionTime?.flush(); } catch {}
+    });
+    window.addEventListener('beforeunload', () => {
+        try { window.__questionTime?.flush(); } catch {}
+    });
 
     // small generic debounce
     function debounce(fn, wait = 300) {
@@ -1093,82 +1284,98 @@
     }
 
     function setupMonacoEditor() {
-        window.editors = window.editors || {};  // ✅ ensure it exists
-        require(['vs/editor/editor.main'], () => {
-            if (!window.__javaCompletionsRegistered && typeof registerJavaCompletions === 'function') {
-                try {
-                    registerJavaCompletions();     // ✅ no args (uses global monaco)
-                    // or: registerJavaCompletions(monaco);  // ✅ also fine
-                    window.__javaCompletionsRegistered = true;
-                } catch (e) {
-                    console.error("Java completions failed to register:", e);
-                }
-            }
-            document.querySelectorAll('.monaco-editor-container')
-                .forEach(container => {
-                    const qid = container.dataset.questionId;
-                    const starter = container.dataset.starterCode || '';
+    window.editors = window.editors || {};  // ensure it exists
+    window.__editorInitPromises = window.__editorInitPromises || {};
 
+    // Create editors lazily (important when non-active questions are display:none).
+    window.ensureEditorForQuestion = window.ensureEditorForQuestion || function ensureEditorForQuestion(qid) {
+        qid = String(qid);
+
+        if (window.editors[qid]) return Promise.resolve(window.editors[qid]);
+        if (window.__editorInitPromises[qid]) return window.__editorInitPromises[qid];
+
+        const container = document.querySelector(`.monaco-editor-container[data-question-id="${qid}"]`);
+        if (!container) return Promise.reject(new Error(`Editor container not found for question_id=${qid}`));
+
+        window.__editorInitPromises[qid] = new Promise((resolve, reject) => {
+            require(['vs/editor/editor.main'], () => {
+                try {
+                    if (!window.__javaCompletionsRegistered && typeof registerJavaCompletions === 'function') {
+                        try {
+                            registerJavaCompletions(); // uses global monaco
+                            window.__javaCompletionsRegistered = true;
+                        } catch (e) {
+                            console.error("Java completions failed to register:", e);
+                        }
+                    }
+
+                    const starter = container.dataset.starterCode || '';
                     const key = editorStorageKey(qid);
                     const posKey = key + ':pos';
 
-                    // ✅ put cleanup here (before you read from localStorage)
+                    // cleanup before restore (only restore on reload/back-forward)
                     if (!shouldRestoreDraft()) {
                         localStorage.removeItem(key);
                         localStorage.removeItem(posKey);
                     }
 
-                    // hydrate from localStorage if present, else fallback to starter
                     const saved = shouldRestoreDraft() ? localStorage.getItem(key) : null;
                     const initialValue = (saved !== null) ? saved : starter;
 
-                    // create and store each editor
                     const editor = monaco.editor.create(container, {
                         value: initialValue,
                         language: 'java',
                         theme: 'vs-dark',
                         automaticLayout: true
                     });
-                    window.editors[qid] = editor
 
-                    // autosave (debounced) whenever content changes
+                    window.editors[qid] = editor;
+
+                    // autosave
                     const save = debounce(() => {
                         try {
                             localStorage.setItem(key, editor.getValue());
                         } catch (e) {
-                            // localStorage quota errors etc.
                             console.warn('Save failed:', e);
                         }
                     }, 400);
                     editor.onDidChangeModelContent(save);
 
-                    // optional: restore cursor/scroll position too
+                    // optional restore cursor/scroll
                     const savedPos = localStorage.getItem(posKey);
                     if (savedPos) {
                         try {
                             const {position, scrollTop} = JSON.parse(savedPos);
                             if (position) editor.setPosition(position);
                             if (typeof scrollTop === 'number') editor.setScrollTop(scrollTop);
-                        } catch {
-                        }
+                        } catch {}
                     }
 
                     editor.onDidChangeCursorPosition(debounce(() => {
-                        localStorage.setItem(posKey, JSON.stringify({
-                            position: editor.getPosition(),
-                            scrollTop: editor.getScrollTop()
-                        }));
+                        try {
+                            localStorage.setItem(posKey, JSON.stringify({
+                                position: editor.getPosition(),
+                                scrollTop: editor.getScrollTop()
+                            }));
+                        } catch {}
                     }, 400));
 
                     if (typeof initManualDiagnostics === "function") {
                         initManualDiagnostics(window.editors);
                     }
-                });
+
+                    resolve(editor);
+                } catch (err) {
+                    reject(err);
+                }
+            });
         });
 
-    }
+        return window.__editorInitPromises[qid];
+    };
+}
 
-    setupMonacoEditor();
+setupMonacoEditor();
 
 </script>
 
@@ -1219,30 +1426,8 @@
 </script>
 
 <script>
-    // Try to infer the current question (last-focused Monaco editor or a selected card)
-    let lastFocusedQid = null;
-
-    function trackEditorFocus() {
-        document.querySelectorAll('.monaco-editor-container').forEach(c => {
-            // focusin bubbles from Monaco’s inner contenteditable
-            c.addEventListener('focusin', () => {
-                lastFocusedQid = c.dataset.questionId || null;
-            });
-        });
-    }
-
-    function currentQuestionId() {
-        // Prefer explicit context, then last-focused Monaco
-        return window.aiContext?.questionId ?? lastFocusedQid ?? null;
-    }
-
     function getAttemptNo() {
         return window.aiContext?.attemptNo ?? 1;
-    }
-
-    function getModelId() {
-        // If your webllm-client exposes something, use that; else keep your constant
-        return window.webllm?.modelId || "Llama-3.2-3B-Instruct-q4f32_1-MLC";
     }
 
     // Optional: capture paste sizes (both in chat and editors)
@@ -1271,9 +1456,94 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
-        trackEditorFocus();
         hookPasteTelemetry();
     });
+</script>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const pages = Array.from(document.querySelectorAll('.question-page'));
+    if (!pages.length) return;
+
+    const prevBtn = document.getElementById('q-prev');
+    const nextBtn = document.getElementById('q-next');
+    const counterEl = document.getElementById('q-counter');
+    const timerEl = document.getElementById('q-timer');
+    try { window.__questionTime?.bindDisplay(timerEl); } catch (e) {}
+
+    const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+
+    // Optional: support deep-linking via ?q= (1-based)
+    const params = new URLSearchParams(window.location.search);
+    let idx = clamp((parseInt(params.get('q') || '1', 10) - 1) || 0, 0, pages.length - 1);
+
+    function layoutEditorFor(qid) {
+        if (typeof window.ensureEditorForQuestion !== 'function') return;
+
+        window.ensureEditorForQuestion(qid)
+            .then(ed => {
+                if (ed && typeof ed.layout === 'function') {
+                    setTimeout(() => ed.layout(), 0);
+                    setTimeout(() => ed.layout(), 300);
+                }
+            })
+            .catch(err => console.warn('Editor init/layout failed:', err));
+    }
+
+    function setAIQuestion(qid) {
+        try {
+            window.aiContext = window.aiContext || {};
+            window.aiContext.questionId = qid;
+
+            // keep the AI client in sync (used for telemetry / context)
+            if (window.webllm && typeof window.webllm.setAIContext === 'function') {
+                window.webllm.setAIContext({
+                    attemptNo: window.aiContext.attemptNo ?? 1,
+                    questionId: qid
+                });
+            }
+        } catch (e) {
+            console.warn('setAIQuestion failed:', e);
+        }
+    }
+
+    function render() {
+        pages.forEach((p, i) => p.classList.toggle('active', i === idx));
+
+        const current = idx + 1;
+        const total = pages.length;
+
+        if (counterEl) counterEl.textContent = `Question ${current} of ${total}`;
+        if (prevBtn) prevBtn.disabled = (idx === 0);
+        if (nextBtn) nextBtn.disabled = (idx === total - 1);
+
+        const qid = pages[idx].dataset.questionId;
+        try { window.__questionTime?.setActive(qid); } catch (e) {}
+        setAIQuestion(qid);
+
+        // Init + layout Monaco once the container is visible
+        layoutEditorFor(qid);
+
+        // Keep URL in sync (optional)
+        const url = new URL(window.location.href);
+        url.searchParams.set('q', String(current));
+        history.replaceState(null, '', url);
+    }
+
+    prevBtn && prevBtn.addEventListener('click', () => {
+        idx = clamp(idx - 1, 0, pages.length - 1);
+        render();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+
+    nextBtn && nextBtn.addEventListener('click', () => {
+        idx = clamp(idx + 1, 0, pages.length - 1);
+        render();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+
+    render();
+});
 </script>
 
 </body>

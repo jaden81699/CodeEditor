@@ -14,6 +14,7 @@ from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.models import User
 from django.core.signing import TimestampSigner, SignatureExpired, BadSignature
 from django.db import transaction
+from django.db.models import Count
 from django.http import JsonResponse, HttpResponse, HttpResponseForbidden, HttpResponseBadRequest
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import logout, get_user_model
@@ -31,6 +32,81 @@ from editor.views import compile_java_file, execute_java_file, compile_java_sour
 signer = TimestampSigner(salt="pre-survey-v1")
 
 User = get_user_model()
+
+
+
+def _difficulty_label(question) -> str:
+    """Return a human-friendly difficulty label if the field exists."""
+    # If you implement difficulty as a choices field, Django provides get_difficulty_display()
+    getter = getattr(question, "get_difficulty_display", None)
+    if callable(getter):
+        try:
+            return getter()
+        except Exception:
+            pass
+    # Fallback to raw attribute (or empty string if not present yet)
+    return str(getattr(question, "difficulty", "") or "")
+
+
+def get_attempt_question_lists(user):
+    """
+    Returns per-attempt lists of which questions were correct/wrong.
+    Each item includes question id, name, and difficulty (if available).
+    """
+    subs = (Submission.objects
+            .filter(user=user, attempt_no__in=(1, 2))
+            .select_related("question"))
+
+    def pack(qs):
+        out = []
+        for s in qs:
+            q = s.question
+            out.append({
+                "question_id": q.id,
+                "question_name": q.question_name,
+                "difficulty": _difficulty_label(q),
+                "is_correct": bool(s.is_correct),
+            })
+        return out
+
+    return {
+        "attempt1": {
+            "correct": pack(subs.filter(attempt_no=1, is_correct=True)),
+            "wrong":   pack(subs.filter(attempt_no=1, is_correct=False)),
+        },
+        "attempt2": {
+            "correct": pack(subs.filter(attempt_no=2, is_correct=True)),
+            "wrong":   pack(subs.filter(attempt_no=2, is_correct=False)),
+        },
+    }
+
+
+def get_difficulty_summary(user, attempt_no: int):
+    """
+    Returns grouped counts by (difficulty, is_correct) for the given attempt.
+    Works once Questions.difficulty is implemented; otherwise difficulty will be ''.
+    """
+    # values('question__difficulty') will fail only if the field doesn't exist at all
+    # so we guard by checking attribute on the model class.
+    if not hasattr(Questions, "difficulty"):
+        return []
+
+    return list(
+        (Submission.objects
+            .filter(user=user, attempt_no=attempt_no)
+            .values("question__difficulty", "is_correct")
+            .annotate(n=Count("id"))
+            .order_by("question__difficulty", "is_correct"))
+    )
+
+
+def get_improved_question_ids(user):
+    """Question IDs that were wrong on attempt 1 and correct on attempt 2."""
+    s1 = {s.question_id: s.is_correct
+          for s in Submission.objects.filter(user=user, attempt_no=1)}
+    s2 = {s.question_id: s.is_correct
+          for s in Submission.objects.filter(user=user, attempt_no=2)}
+    return [qid for qid, ok1 in s1.items() if (ok1 is False and s2.get(qid) is True)]
 
 
 def register_control(request):
@@ -125,6 +201,14 @@ def editor(request):
         user=request.user, attempt_no=2, is_correct=True
     ).count()
 
+    # Per-question outcome tracking (by attempt and (optionally) by difficulty)
+    attempt_lists = get_attempt_question_lists(request.user)
+    improved_qids = get_improved_question_ids(request.user)
+
+    # Grouped summaries by difficulty (once you add Questions.difficulty)
+    attempt1_difficulty_summary = get_difficulty_summary(request.user, 1)
+    attempt2_difficulty_summary = get_difficulty_summary(request.user, 2)
+
     resp = render(request, "control_app/editor.html", {
         "questions": questions,
         "is_control": is_control,
@@ -134,6 +218,13 @@ def editor(request):
         "control_pass": control_pass,
         "first_correct": first_correct,
         "second_correct": second_correct,
+
+        # Detailed attempt breakdowns (for UI/debug/research export)
+        "attempt_lists": attempt_lists,
+        "improved_qids": improved_qids,
+        "attempt1_difficulty_summary": attempt1_difficulty_summary,
+        "attempt2_difficulty_summary": attempt2_difficulty_summary,
+
         "attempt_no": control_pass,
         # if you still want to show their cumulative profile stats:
         "first_score": profile.first_attempt_correct,
@@ -145,33 +236,101 @@ def editor(request):
     return resp
 
 
+
 @login_required
+@require_POST
 def submit_all(request):
     """
     Handles *all* question submissions in one POST.
-    Records a Submission per question, updates profile,
+    Records a Submission per question (including timing), updates profile counters,
     then returns JSON with the next URL to redirect to.
+
+    Accepts either:
+      1) form-encoded payload:
+            question_id=<id>&code=<code>&time_spent_ms=<ms>  (repeated for each question)
+      2) JSON payload:
+            {"submissions":[{"question_id":1,"code":"...","time_spent_ms":1234}, ...]}
+
+    Notes:
+    - attempt_no is derived from the server-side session (control_pass) to prevent tampering.
+    - counters are recomputed from Submission rows to remain idempotent (no double-counting on re-submit).
+    - time_spent_ms is treated as client-reported "active" time on that question for that attempt.
     """
-    question_ids = request.POST.getlist('question_id')
-    codes = request.POST.getlist('code')
-    print("POSTed QIDs:", question_ids)
+    # --- Parse payload (supports form-encoded and JSON) ---
+    if request.content_type and request.content_type.startswith("application/json"):
+        try:
+            payload = json.loads(request.body.decode("utf-8") or "{}")
+        except Exception:
+            return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+        submissions = payload.get("submissions") or []
+        question_ids = [str(s.get("question_id", "")).strip() for s in submissions]
+        codes = [str(s.get("code", "")) for s in submissions]
+        time_spent_raw = [s.get("time_spent_ms", 0) for s in submissions]
+    else:
+        question_ids = request.POST.getlist("question_id")
+        codes = request.POST.getlist("code")
+        time_spent_raw = request.POST.getlist("time_spent_ms")
+
+    if len(question_ids) != len(codes):
+        return JsonResponse(
+            {"error": f"Mismatched payload: received {len(question_ids)} question_ids but {len(codes)} code entries."},
+            status=400
+        )
+
+    # Normalize/validate qids
+    try:
+        qids_int = [int(qid) for qid in question_ids]
+    except Exception:
+        return JsonResponse({"error": "Invalid question_id list."}, status=400)
+
+    # Normalize timing list (pad/trim to match qids)
+    def _parse_ms(v):
+        try:
+            ms = int(float(v))
+        except Exception:
+            ms = 0
+        if ms < 0:
+            ms = 0
+        # Safety cap: 24 hours per question (prevents obvious bad data / tampering)
+        cap = 24 * 60 * 60 * 1000
+        if ms > cap:
+            ms = cap
+        return ms
+
+    time_ms = [_parse_ms(v) for v in time_spent_raw]
+    if len(time_ms) < len(qids_int):
+        time_ms.extend([0] * (len(qids_int) - len(time_ms)))
+    elif len(time_ms) > len(qids_int):
+        time_ms = time_ms[:len(qids_int)]
 
     profile = request.user.participantprofile
-    is_ctrl = profile.group == ParticipantProfile.CONTROL
+    is_ctrl = (profile.group == ParticipantProfile.CONTROL)
 
-    # first‐pass or second‐pass?
+    # First-pass or second-pass?
     control_pass = request.session.get("control_pass", 1)
+
+    # Prevent double-counting if the user submits twice (reload/back/etc.)
+    Submission.objects.filter(
+        user=request.user,
+        attempt_no=control_pass,
+        question_id__in=qids_int,
+    ).delete()
+
     wrong_ids = []
 
-    # loop through each pair
-    for qid, code in zip(question_ids, codes):
-        question = get_object_or_404(Questions, pk=int(qid))
-        # compile & run
+    # Loop through each pair
+    for qid, code, spent_ms in zip(qids_int, codes, time_ms):
+        question = get_object_or_404(Questions, pk=qid)
+
+        # Compile & run
         is_correct = False
         harness = (question.harness_code or "").strip()
         if not harness:
-            return JsonResponse({"error": f"Server configuration error: harness_code missing for question {qid}."},
-                                status=500)
+            return JsonResponse(
+                {"error": f"Server configuration error: harness_code missing for question {qid}."},
+                status=500
+            )
 
         try:
             with tempfile.TemporaryDirectory() as tmp:
@@ -179,6 +338,7 @@ def submit_all(request):
                     "Solution.java": code,
                     "Main.java": harness,
                 })
+
                 if compile_proc.returncode == 0:
                     if question.question_type == "IO":
                         is_correct = all(
@@ -186,55 +346,72 @@ def submit_all(request):
                             == tc.expected_output.strip()
                             for tc in question.test_cases.all()
                         )
-        except:
+                    else:
+                        # TODO: implement non-IO grading (e.g., JUnit) if you use UNIT question_type
+                        is_correct = False
+                else:
+                    is_correct = False
+        except Exception as e:
+            print("submit_all grading error:", repr(e))
             is_correct = False
 
-        # record submission
+        # Record submission (includes timing)
         Submission.objects.create(
             user=request.user,
             question=question,
             attempt_no=control_pass,
             used_ai=(is_ctrl and control_pass == 2),
-            is_correct=is_correct
+            is_correct=is_correct,
+            time_spent_ms=spent_ms,
         )
 
-        # update profile counters
-        if control_pass == 1:
-            if is_correct:
-                profile.first_attempt_correct += 1
-            else:
-                profile.first_attempt_incorrect += 1
-
-        if not is_correct and control_pass == 1:
+        if control_pass == 1 and (not is_correct):
             wrong_ids.append(question.id)
 
-    print(">> received qids:", question_ids)
-    print(">> received codes:", len(codes), "items")
+    # Recompute counters from DB (idempotent + also works for pass 2)
+    profile.first_attempt_correct = Submission.objects.filter(
+        user=request.user, attempt_no=1, is_correct=True
+    ).count()
+    profile.first_attempt_incorrect = Submission.objects.filter(
+        user=request.user, attempt_no=1, is_correct=False
+    ).count()
+
+    # Your schema has second_attempt_correct; update it from attempt_no=2 Submissions
+    if hasattr(profile, "second_attempt_correct"):
+        profile.second_attempt_correct = Submission.objects.filter(
+            user=request.user, attempt_no=2, is_correct=True
+        ).count()
+
+    # If you add a second_attempt_incorrect field later, this will start populating it automatically
+    if hasattr(profile, "second_attempt_incorrect"):
+        profile.second_attempt_incorrect = Submission.objects.filter(
+            user=request.user, attempt_no=2, is_correct=False
+        ).count()
+
     profile.save()
 
-    # now decide where to go
+    # Decide where to go
     if is_ctrl:
         if control_pass == 1:
-            # prepare second pass
-            print(">> wrong_ids going into session:", wrong_ids)
-            request.session['redo_questions'] = wrong_ids
-            request.session['control_pass'] = 2
+            # Prepare second pass
+            request.session["redo_questions"] = wrong_ids
+            request.session["control_pass"] = 2
             request.session.modified = True
 
             if not wrong_ids:
-                # everyone correct → thank you
+                # Everyone correct → thank you
                 return JsonResponse({
                     "next": "thank-you",
                     "redirect_url": reverse("thank-you")
                 })
             else:
-                # some wrong → go back to editor for only wrong ones
+                # Some wrong → go back to editor for only wrong ones
                 return JsonResponse({
                     "next": "second-pass",
                     "redirect_url": reverse("control_app:editor")
                 })
 
-        # pass 2 always goes to post assessment
+        # Pass 2 always goes to post assessment
         profile.both_ai_and_non_ai_portion_of_code_assessment_completed = True
         profile.save()
         return JsonResponse({
@@ -242,8 +419,10 @@ def submit_all(request):
             "redirect_url": reverse("post-assessment")
         })
 
-    # non-control fallback
+    # Non-control fallback (or unexpected group mapping)
     return HttpResponse("An unexpected error has occurred")
+
+
 
 
 @login_required
