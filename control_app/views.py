@@ -346,9 +346,6 @@ def submit_all(request):
                             == tc.expected_output.strip()
                             for tc in question.test_cases.all()
                         )
-                    else:
-                        # TODO: implement non-IO grading (e.g., JUnit) if you use UNIT question_type
-                        is_correct = False
                 else:
                     is_correct = False
         except Exception as e:
