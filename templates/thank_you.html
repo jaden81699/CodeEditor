@@ -144,42 +144,35 @@
         <div class="col-12 col-md-10 col-lg-8 col-xxl-7">
             <div class="card">
                 <div class="card-header">
-                    <h5 class="mb-0">Thank you for participating</h5>
+                    <h5 class="mb-0">Thank you for participating!</h5>
                 </div>
                 <div class="card-body p-4">
                     <div class="text-center mb-3">
                         <div class="success-mark"></div>
-                        <h2 class="fw-semibold mb-1 text-dark-emphasis">You’re all set!</h2>
+                        <h2 class="fw-semibold mb-1 text-white">You’re finished!</h2>
                         <p class="lead mb-0">Your surveys and coding submissions have been recorded.</p>
                     </div>
-
-                    <!-- Completion code (optional) -->
-                    {% if completion_code %}
-                        <div class="mt-4">
-                            <label class="form-label">Completion Code</label>
-                            <div class="input-group code-box">
-                                <input id="completionCode" type="text" class="form-control"
-                                       value="{{ completion_code }}" readonly>
-                                <button id="copyBtn" class="btn btn-outline-light" type="button">Copy</button>
-                            </div>
-                            <div id="copyHint" class="form-text text-muted">Provide this code if you were asked to
-                                confirm participation.
-                            </div>
-                        </div>
-                    {% endif %}
 
                     <!-- What happens next -->
                     <div class="mt-4">
                         <h6 class="text-uppercase text-muted small mb-2">What happens next</h6>
                         <ul class="mb-0 text-muted">
-                            <li>Your data are saved securely. You may close this tab or log out below.</li>
-                            <li>If you have questions or want to withdraw your data, contact us at
-                                <a href="mailto:{{ support_email|default:'research@example.edu' }}" class="link-info">
-                                    {{ support_email|default:'research@example.edu' }}
+                            {% if entered_raffle %}
+                                <li>
+                                    Your email address has been recorded. We will reach out by [NEED TO FIGURE OUT DATE]
+                                    if you are selected as the recipient of the $40 Amazon gift card.
+                                </li>
+                            {% else %}
+                                <li>
+                                    <b>You have chosen to opt out of the raffle for the $40 Amazon gift card.</b> We appreciate
+                                        your time.
+                                </li>
+                            {% endif %}
+                            <li>Your data has been recorded securely. You may close this tab.</li>
+                            <li>If you have questions, contact us at
+                                <a href="mailto:Jadenwalker@my.ccsu.edu" class="link-info">
+                                    Jadenwalker@my.ccsu.edu
                                 </a>
-                            </li>
-                            <li class="text-muted">IRB/Study info: <span
-                                    class="text-muted">{{ study_title|default:"AI-Assisted Programming Study" }}</span>
                             </li>
                         </ul>
                     </div>
@@ -187,16 +180,9 @@
 
                 <div class="card-footer d-flex flex-wrap gap-2 justify-content-between">
                     <div>
-                        {% if request.user.is_authenticated %}
-                            {% if request.user.participantprofile.group == 'C' %}
-                                <a href="{% url 'logout' %}" class="btn btn-danger">Log out</a>
-                            {% else %}
-                                <a href="{% url 'logout' %}" class="btn btn-danger">Log out</a>
-                            {% endif %}
-                        {% endif %}
-                        <button type="button" class="btn btn-outline-light" id="closeTab">Close Tab</button>
+                        <h5 class="mb-0 text-white">Again, You may close this tab.</h5>
                     </div>
-                    <small class="text-muted align-self-center">Thank you again—we appreciate your time!</small>
+                    <small class="text-muted align-self-center">Thank you again, we appreciate your time!</small>
                 </div>
             </div>
         </div>
@@ -225,11 +211,6 @@
             }
         });
     })();
-
-    // Close tab (may be blocked if not opened by script)
-    document.getElementById('closeTab')?.addEventListener('click', () => {
-        window.close();
-    });
 
     // Gentle confetti
     (function confetti() {

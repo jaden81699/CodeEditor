@@ -688,20 +688,9 @@ def ai_telemetry(request):
 
 
 def thank_you(request):
-    ctx = {
-        "support_email": "research@example.edu",
-        "study_title": "AI-Assisted Programming Study"
-    }
-    return render(request, "thank_you.html", ctx)
-
-
-class ControlLoginView(LoginView):
-    template_name = "login_register.html"
-    redirect_authenticated_user = True
-    success_url = reverse_lazy("pre-assessment")
-
-    def get_success_url(self):
-        return self.success_url
+    raw = (request.GET.get("entered_raffle") or "").strip().lower()
+    entered_raffle = raw in {"1", "true", "yes", "y", "on"}
+    return render(request, "thank_you.html", {"entered_raffle": entered_raffle})
 
 
 def logout_view(request):
