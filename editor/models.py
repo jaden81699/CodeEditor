@@ -57,6 +57,14 @@ class ParticipantProfile(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL,
                                 primary_key=True, on_delete=models.CASCADE, related_name="participantprofile")
     group = models.CharField(max_length=1, choices=GROUP_CHOICES)
+    control_all_correct = models.BooleanField(default=False)
+    raffle_page_completed = models.BooleanField(default=False)
+
+    # Raffle gating (same pattern as pre/post)
+    raffle_token = models.CharField(max_length=64, blank=True)
+    raffle_response_id = models.CharField(max_length=64, blank=True)
+    raffle_completed_at = models.DateTimeField(null=True, blank=True)
+
     # first‑round counters
     first_attempt_correct = models.PositiveSmallIntegerField(default=0)
     first_attempt_incorrect = models.PositiveSmallIntegerField(default=0)

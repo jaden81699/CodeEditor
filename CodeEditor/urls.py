@@ -40,4 +40,6 @@ urlpatterns = [
     path("post-assessment-complete/", control_app.views.post_assessment_complete, name="post-assessment-complete"),
     path("ai/telemetry/", control_app.views.ai_telemetry, name="ai_telemetry"),
     path("respond/", ai_respond, name="ai_respond"),
+    path("raffle-entry/", control_app.views.raffle_entry, name="raffle-entry"),
+    path("raffle-entry-complete/", control_app.views.raffle_entry_complete, name="raffle-entry-complete")
 ]

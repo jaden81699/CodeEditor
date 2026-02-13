@@ -188,5 +188,6 @@ def require(name: str) -> str:
 # gets variables from .env
 QUALTRICS_PREASSESSMENT_LINK = require("QUALTRICS_PREASSESSMENT_LINK")
 QUALTRICS_POSTASSESSMENT_LINK = require("QUALTRICS_POSTASSESSMENT_LINK")
+QUALTRICS_RAFFLE_LINK = require("QUALTRICS_RAFFLE_LINK")
 SITE_URL = env.str("SITE_URL", default="")  # e.g., https://codeeditor2025.pythonanywhere.com
 OPENAI_API_KEY = require("OPENAI_API_KEY")

@@ -21,6 +21,7 @@ from django.contrib.auth import logout, get_user_model
 from django.urls import reverse_lazy, reverse
 from django.contrib.auth.views import LoginView
 from django.utils.timezone import make_aware
+from django.utils import timezone
 from django.views.decorators.cache import never_cache, cache_control
 from django.views.decorators.http import require_POST
 
@@ -32,7 +33,6 @@ from editor.views import compile_java_file, execute_java_file, compile_java_sour
 signer = TimestampSigner(salt="pre-survey-v1")
 
 User = get_user_model()
-
 
 
 def _difficulty_label(question) -> str:
@@ -72,11 +72,11 @@ def get_attempt_question_lists(user):
     return {
         "attempt1": {
             "correct": pack(subs.filter(attempt_no=1, is_correct=True)),
-            "wrong":   pack(subs.filter(attempt_no=1, is_correct=False)),
+            "wrong": pack(subs.filter(attempt_no=1, is_correct=False)),
         },
         "attempt2": {
             "correct": pack(subs.filter(attempt_no=2, is_correct=True)),
-            "wrong":   pack(subs.filter(attempt_no=2, is_correct=False)),
+            "wrong": pack(subs.filter(attempt_no=2, is_correct=False)),
         },
     }
 
@@ -93,10 +93,10 @@ def get_difficulty_summary(user, attempt_no: int):
 
     return list(
         (Submission.objects
-            .filter(user=user, attempt_no=attempt_no)
-            .values("question__difficulty", "is_correct")
-            .annotate(n=Count("id"))
-            .order_by("question__difficulty", "is_correct"))
+         .filter(user=user, attempt_no=attempt_no)
+         .values("question__difficulty", "is_correct")
+         .annotate(n=Count("id"))
+         .order_by("question__difficulty", "is_correct"))
     )
 
 
@@ -175,13 +175,26 @@ class ControlLoginView(LoginView):
 @cache_control(no_store=True, no_cache=True, must_revalidate=True, max_age=0, private=True)
 def editor(request):
     profile = request.user.participantprofile
+
+    # Safety: keep users in their assigned app
+    if profile.group != ParticipantProfile.CONTROL:
+        return redirect(editor_url_for(request.user))
+
     is_control = (profile.group == ParticipantProfile.CONTROL)
     is_experimental = False
-    profile.control_assessment_done_and_ai_used = True
-    print(profile.control_assessment_done_and_ai_used)
 
     # which pass are they on? 1 = first try, 2 = second try
     control_pass = request.session.get("control_pass", 1)
+
+    # If you track whether AI was ever shown/used in control, only set it when pass 2 is active
+    if hasattr(profile, "control_assessment_done_and_ai_used"):
+        profile.control_assessment_done_and_ai_used = (control_pass == 2)
+        try:
+            profile.save(update_fields=["control_assessment_done_and_ai_used"])
+        except Exception:
+            # field might not be DB-backed in some environments; ignore
+            pass
+
     redo_mode = (control_pass == 2)
 
     # pick questions
@@ -234,7 +247,6 @@ def editor(request):
     resp["Cross-Origin-Embedder-Policy"] = "require-corp"
 
     return resp
-
 
 
 @login_required
@@ -305,6 +317,11 @@ def submit_all(request):
         time_ms = time_ms[:len(qids_int)]
 
     profile = request.user.participantprofile
+
+    # Safety: submissions in this app are only valid for control users
+    if profile.group != ParticipantProfile.CONTROL:
+        return JsonResponse({"error": "Not authorized for control submissions."}, status=403)
+
     is_ctrl = (profile.group == ParticipantProfile.CONTROL)
 
     # First-pass or second-pass?
@@ -390,27 +407,40 @@ def submit_all(request):
     # Decide where to go
     if is_ctrl:
         if control_pass == 1:
-            # Prepare second pass
+            if not wrong_ids:
+                # Everyone correct on attempt 1 → allow raffle directly (skip post)
+                profile.control_all_correct = True
+                profile.save(update_fields=["control_all_correct"])
+
+                # Clear any in-progress redo state
+                request.session.pop("redo_questions", None)
+                request.session.pop("control_pass", None)
+                request.session.modified = True
+
+                return JsonResponse({
+                    "next": "raffle-entry",
+                    "redirect_url": reverse("raffle-entry")
+                })
+
+            # Some wrong on attempt 1 → prepare second pass
             request.session["redo_questions"] = wrong_ids
             request.session["control_pass"] = 2
             request.session.modified = True
 
-            if not wrong_ids:
-                # Everyone correct → thank you
-                return JsonResponse({
-                    "next": "thank-you",
-                    "redirect_url": reverse("thank-you")
-                })
-            else:
-                # Some wrong → go back to editor for only wrong ones
-                return JsonResponse({
-                    "next": "second-pass",
-                    "redirect_url": reverse("control_app:editor")
-                })
+            return JsonResponse({
+                "next": "second-pass",
+                "redirect_url": reverse("control_app:editor")
+            })
 
         # Pass 2 always goes to post assessment
         profile.both_ai_and_non_ai_portion_of_code_assessment_completed = True
-        profile.save()
+        profile.save(update_fields=["both_ai_and_non_ai_portion_of_code_assessment_completed"])
+
+        # Clear redo state now that coding is complete
+        request.session.pop("redo_questions", None)
+        request.session.pop("control_pass", None)
+        request.session.modified = True
+
         return JsonResponse({
             "status": "redirect",
             "redirect_url": reverse("post-assessment")
@@ -418,8 +448,6 @@ def submit_all(request):
 
     # Non-control fallback (or unexpected group mapping)
     return HttpResponse("An unexpected error has occurred")
-
-
 
 
 @login_required
@@ -562,6 +590,7 @@ def pre_assessment_complete(request):
     return HttpResponseBadRequest("Couldn't find your group")
 
 
+@login_required(login_url='login')
 @guard_post
 @cache_control(no_store=True, no_cache=True, must_revalidate=True, max_age=0, private=True)
 def post_assessment_questionnaire(request):
@@ -601,8 +630,10 @@ def post_assessment_complete(request):
 
     # Already done? be idempotent
     if profile.post_assessment_completed:
-        # send to your final screen / thanks
-        return redirect("thank_you")
+        # If they've already completed the post, send them to raffle (or thanks if raffle is done)
+        if profile.raffle_page_completed:
+            return redirect("thank-you")
+        return redirect("raffle-entry")
 
     state = request.GET.get("state")
     response_id = request.GET.get("responseId") or request.GET.get("Q_R")  # Qualtrics sometimes uses Q_R
@@ -637,12 +668,78 @@ def post_assessment_complete(request):
         "post_assessment_completed_at",
     ])
 
-    # in post_assessment_complete (after verifying state/token and marking completion):
+    return redirect("raffle-entry")
+
+
+@login_required(login_url='login')
+@guard_raffle
+@transaction.atomic
+def raffle_entry(request):
+    profile = request.user.participantprofile
+
+    token = secrets.token_urlsafe(16)
+    profile.raffle_token = token
+    profile.save(update_fields=["raffle_token"])
+
+    state = signer.sign(token)
+    qualtrics_link = settings.QUALTRICS_RAFFLE_LINK  # Qualtrics raffle link
+
+    # Send uid and state, so you can pipe them back on redirect
+    return redirect(f"{qualtrics_link}?uid={request.user.id}&state={state}")
+
+
+@login_required(login_url='login')
+@guard_raffle
+@transaction.atomic
+def raffle_entry_complete(request):
+    profile = (request.user.participantprofile.__class__.objects
+               .select_for_update()
+               .get(pk=request.user.participantprofile.pk))
+
+    # Already done? be idempotent
+    if profile.raffle_page_completed:
+        return redirect(f"{reverse('thank-you')}?entered_raffle=1")
+
+    state = request.GET.get("state")
+    response_id = request.GET.get("responseId") or request.GET.get("Q_R")  # Qualtrics sometimes uses Q_R
+    q_uid = request.GET.get("uid")
+    entered_raffle = (request.GET.get("entered_raffle") or "").strip().lower()
+
+    if not state:
+        return HttpResponseBadRequest("Missing state")
+
+    try:
+        token = signer.unsign(state, max_age=7200)  # 2 hours
+    except SignatureExpired:
+        return HttpResponseForbidden("State expired")
+    except BadSignature:
+        return HttpResponseForbidden("Invalid state")
+
+    if token != (profile.raffle_token or ""):
+        return HttpResponseForbidden("Token mismatch")
+
+    # (Optional) sanity check – never use q_uid to choose the account
+    if q_uid and str(q_uid) != str(request.user.pk):
+        return HttpResponseForbidden("UID mismatch")
+
+    # Mark complete and clear token
+    profile.raffle_page_completed = True
+    profile.raffle_response_id = response_id or ""
+    profile.raffle_token = ""
+    profile.raffle_completed_at = timezone.now()
+    profile.save(update_fields=[
+        "raffle_page_completed",
+        "raffle_response_id",
+        "raffle_token",
+        "raffle_completed_at",
+    ])
+
+    # End session + prevent re-entry
     request.user.is_active = False
     request.user.save(update_fields=["is_active"])
-    logout(request)  # end the current session
+    logout(request)
 
-    return redirect("thank-you")  # or wherever you end
+    return redirect(f"{reverse('thank-you')}?entered_raffle={entered_raffle}")
 
 
 @login_required
@@ -673,7 +770,7 @@ def ai_telemetry(request):
     ct = None
     if client_ts:
         try:
-            ct = make_aware(datetime.datetime.fromisoformat(client_ts))
+            ct = make_aware(datetime.fromisoformat(client_ts))
         except Exception:
             ct = None
 
