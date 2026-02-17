@@ -303,6 +303,31 @@
         html.js .question-page { display: none; }
         html.js .question-page.active { display: block; }
 
+        .question-body code {
+            padding: 0.12rem 0.35rem;
+            border-radius: 6px;
+            background: rgba(0, 0, 0, 0.06);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.95em;
+        }
+
+        .question-body pre {
+            padding: 12px 14px;
+            border-radius: 10px;
+            background: rgba(0, 0, 0, 0.04);
+            border: 1px solid rgba(0, 0, 0, 0.12);
+            overflow-x: auto;
+            margin: 10px 0;
+        }
+
+        .question-body p {
+            margin: 8px 0;
+        }
+
+        .question-body ul {
+            margin: 6px 0 10px 0;
+        }
+
     </style>
 </head>
 
@@ -374,8 +399,8 @@
                                                 <div class="card-header bg-secondary text-white">
                                                    <b> Question {{ forloop.counter }}: {{ question.question_name }}</b></div>
                                                 <div class="card-body">
-                                                    <div class="question-text"
-                                                         style="white-space: pre-wrap">{{ question.question_string|safe }}</div>
+                                                    <div class="question-body"
+                                                         style="">{{ question.question_string|safe }}</div>
 
                                                     <div id="editor-{{ question.id }}"
                                                          class="monaco-editor-container mb-3"
