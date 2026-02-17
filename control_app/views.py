@@ -28,7 +28,7 @@ from django.views.decorators.http import require_POST
 from CodeEditor import settings
 from decorators import *
 from editor.models import ParticipantProfile, Questions, Submission, AITelemetry
-from editor.views import compile_java_file, execute_java_file, compile_java_sources
+from editor.views import compile_java_file, execute_java_file, compile_java_sources, grade_io_question
 
 signer = TimestampSigner(salt="pre-survey-v1")
 
@@ -256,17 +256,6 @@ def submit_all(request):
     Handles *all* question submissions in one POST.
     Records a Submission per question (including timing), updates profile counters,
     then returns JSON with the next URL to redirect to.
-
-    Accepts either:
-      1) form-encoded payload:
-            question_id=<id>&code=<code>&time_spent_ms=<ms>  (repeated for each question)
-      2) JSON payload:
-            {"submissions":[{"question_id":1,"code":"...","time_spent_ms":1234}, ...]}
-
-    Notes:
-    - attempt_no is derived from the server-side session (control_pass) to prevent tampering.
-    - counters are recomputed from Submission rows to remain idempotent (no double-counting on re-submit).
-    - time_spent_ms is treated as client-reported "active" time on that question for that attempt.
     """
     # --- Parse payload (supports form-encoded and JSON) ---
     if request.content_type and request.content_type.startswith("application/json"):
@@ -304,8 +293,7 @@ def submit_all(request):
             ms = 0
         if ms < 0:
             ms = 0
-        # Safety cap: 24 hours per question (prevents obvious bad data / tampering)
-        cap = 24 * 60 * 60 * 1000
+        cap = 24 * 60 * 60 * 1000  # 24h safety cap
         if ms > cap:
             ms = cap
         return ms
@@ -318,71 +306,87 @@ def submit_all(request):
 
     profile = request.user.participantprofile
 
-    # Safety: submissions in this app are only valid for control users
+    # Safety: this submit_all is for control users only
     if profile.group != ParticipantProfile.CONTROL:
-        return JsonResponse({"error": "Not authorized for control submissions."}, status=403)
-
-    is_ctrl = (profile.group == ParticipantProfile.CONTROL)
+        return JsonResponse({"error": "Not authorized. For control submissions onluy."}, status=403)
 
     # First-pass or second-pass?
     control_pass = request.session.get("control_pass", 1)
 
-    # Prevent double-counting if the user submits twice (reload/back/etc.)
-    Submission.objects.filter(
-        user=request.user,
-        attempt_no=control_pass,
-        question_id__in=qids_int,
-    ).delete()
+    if control_pass == 2:
+        allowed = set(int(x) for x in (request.session.get("redo_questions", []) or []))
+
+        # Filter payload to only allowed qids
+        filtered = [(qid, code, ms) for (qid, code, ms) in zip(qids_int, codes, time_ms) if qid in allowed]
+
+        # Option A (recommended): silently ignore any extra qids
+        qids_int = [t[0] for t in filtered]
+        codes = [t[1] for t in filtered]
+        time_ms = [t[2] for t in filtered]
 
     wrong_ids = []
 
-    # Loop through each pair
     for qid, code, spent_ms in zip(qids_int, codes, time_ms):
         question = get_object_or_404(Questions, pk=qid)
 
-        # Compile & run
-        is_correct = False
-        harness = (question.harness_code or "").strip()
-        if not harness:
-            return JsonResponse(
-                {"error": f"Server configuration error: harness_code missing for question {qid}."},
-                status=500
-            )
+        results = []
+        compile_err = ""
+        runtime_err = ""
 
+        # --- Grade ---
         try:
-            with tempfile.TemporaryDirectory() as tmp:
-                compile_proc = compile_java_sources(tmp, {
-                    "Solution.java": code,
-                    "Main.java": harness,
-                })
-
-                if compile_proc.returncode == 0:
-                    if question.question_type == "IO":
-                        is_correct = all(
-                            execute_java_file("Main", tmp, input_data=tc.test_input).strip()
-                            == tc.expected_output.strip()
-                            for tc in question.test_cases.all()
-                        )
-                else:
-                    is_correct = False
+            if question.question_type == "IO":
+                results, compile_err, runtime_err = grade_io_question(question, code)
+            else:
+                # If you later add UNIT grading, plug it in here.
+                compile_err = "UNIT grading not implemented."
+                results = []
         except Exception as e:
-            print("submit_all grading error:", repr(e))
-            is_correct = False
+            # Treat unexpected exceptions like compile/grade failures, but still SAVE a row.
+            compile_err = (compile_err + "\n" + repr(e)).strip() if compile_err else repr(e)
+            results = []
 
-        # Record submission (includes timing)
-        Submission.objects.create(
+        # --- Compute stats to save ---
+        if results:
+            total = len(results)
+            passed_count = sum(1 for r in results if r.get("passed"))
+            failed_ids = [
+                r.get("test_case_id")
+                for r in results
+                if not r.get("passed") and r.get("test_case_id") is not None
+            ]
+        else:
+            # If compile failed / no results returned, treat all testcases as failed (stable IDs).
+            total = getattr(question, "test_cases", None).count() if hasattr(question, "test_cases") else 0
+            passed_count = 0
+            failed_ids = list(question.test_cases.values_list("id", flat=True)) if total else []
+
+        is_correct = (total > 0 and passed_count == total and not compile_err and not runtime_err)
+
+        # IMPORTANT: for control group, AI is only available on pass 2 (your editor sets show_ai=True on pass 2)
+        used_ai_flag = (control_pass == 2)
+
+        Submission.objects.update_or_create(
             user=request.user,
             question=question,
             attempt_no=control_pass,
-            used_ai=(is_ctrl and control_pass == 2),
-            is_correct=is_correct,
-            time_spent_ms=spent_ms,
+            defaults={
+                "used_ai": used_ai_flag,
+                "is_correct": is_correct,
+                "time_spent_ms": spent_ms,
+                "code": code,
+                "total_test_cases": total,
+                "passed_test_cases": passed_count,
+                "failed_testcase_ids": failed_ids,
+                "compile_error": compile_err or "",
+                "runtime_error": runtime_err or "",
+            }
         )
 
         if control_pass == 1 and (not is_correct):
             wrong_ids.append(question.id)
 
-    # Recompute counters from DB (idempotent + also works for pass 2)
+    # --- Recompute counters from DB (idempotent) ---
     profile.first_attempt_correct = Submission.objects.filter(
         user=request.user, attempt_no=1, is_correct=True
     ).count()
@@ -390,13 +394,11 @@ def submit_all(request):
         user=request.user, attempt_no=1, is_correct=False
     ).count()
 
-    # Your schema has second_attempt_correct; update it from attempt_no=2 Submissions
     if hasattr(profile, "second_attempt_correct"):
         profile.second_attempt_correct = Submission.objects.filter(
             user=request.user, attempt_no=2, is_correct=True
         ).count()
 
-    # If you add a second_attempt_incorrect field later, this will start populating it automatically
     if hasattr(profile, "second_attempt_incorrect"):
         profile.second_attempt_incorrect = Submission.objects.filter(
             user=request.user, attempt_no=2, is_correct=False
@@ -404,113 +406,90 @@ def submit_all(request):
 
     profile.save()
 
-    # Decide where to go
-    if is_ctrl:
-        if control_pass == 1:
-            if not wrong_ids:
-                # Everyone correct on attempt 1 → allow raffle directly (skip post)
-                profile.control_all_correct = True
-                profile.save(update_fields=["control_all_correct"])
+    # --- Redirect logic (keep your existing behavior) ---
+    if control_pass == 1:
+        if not wrong_ids:
+            profile.control_all_correct = True
+            profile.save(update_fields=["control_all_correct"])
 
-                # Clear any in-progress redo state
-                request.session.pop("redo_questions", None)
-                request.session.pop("control_pass", None)
-                request.session.modified = True
-
-                return JsonResponse({
-                    "next": "raffle-entry",
-                    "redirect_url": reverse("raffle-entry")
-                })
-
-            # Some wrong on attempt 1 → prepare second pass
-            request.session["redo_questions"] = wrong_ids
-            request.session["control_pass"] = 2
+            request.session.pop("redo_questions", None)
+            request.session.pop("control_pass", None)
             request.session.modified = True
 
-            return JsonResponse({
-                "next": "second-pass",
-                "redirect_url": reverse("control_app:editor")
-            })
+            return JsonResponse({"next": "raffle-entry", "redirect_url": reverse("raffle-entry")})
 
-        # Pass 2 always goes to post assessment
-        profile.both_ai_and_non_ai_portion_of_code_assessment_completed = True
-        profile.save(update_fields=["both_ai_and_non_ai_portion_of_code_assessment_completed"])
-
-        # Clear redo state now that coding is complete
-        request.session.pop("redo_questions", None)
-        request.session.pop("control_pass", None)
+        request.session["redo_questions"] = wrong_ids
+        request.session["control_pass"] = 2
         request.session.modified = True
 
-        return JsonResponse({
-            "status": "redirect",
-            "redirect_url": reverse("post-assessment")
-        })
+        return JsonResponse({"next": "second-pass", "redirect_url": reverse("control_app:editor")})
 
-    # Non-control fallback (or unexpected group mapping)
-    return HttpResponse("An unexpected error has occurred")
+    # Pass 2 goes to post assessment
+    profile.both_ai_and_non_ai_portion_of_code_assessment_completed = True
+    profile.save(update_fields=["both_ai_and_non_ai_portion_of_code_assessment_completed"])
+
+    request.session.pop("redo_questions", None)
+    request.session.pop("control_pass", None)
+    request.session.modified = True
+
+    return JsonResponse({"status": "redirect", "redirect_url": reverse("post-assessment")})
 
 
-@login_required
+@login_required(login_url="login")
+@require_POST
 def run_code(request):
-    """
-    Compiles and executes Java code for a given question (I/O or unit test).
-    Expects POST params:
-      - code: the user’s Main.java source
-      - question_id: the ID of the Questions object to run against
-    Returns JSON: { results: [ { input, expected_output, actual_output, passed }, … ] }
-    """
-    code = request.POST.get("code", "").strip()
+    code = (request.POST.get("code") or "").strip()
     qid = request.POST.get("question_id")
 
-    # Basic validation
     if not code:
         return JsonResponse({"error": "No code provided."}, status=400)
     if not qid:
         return JsonResponse({"error": "No question_id provided."}, status=400)
 
-    # Lookup question
     try:
         question = Questions.objects.get(pk=int(qid))
     except (Questions.DoesNotExist, ValueError):
         return JsonResponse({"error": "Invalid question_id."}, status=400)
 
-    harness = (
-            question.harness_code or "").strip()  # your model includes this field :contentReference[oaicite:2]{index=2}
-    if not harness:
-        return JsonResponse(
-            {"error": "Server configuration error: harness_code (Main.java) is missing for this question."}, status=500)
-
-    test_cases = question.test_cases.all()
-    results = []
+    if question.question_type != "IO":
+        return JsonResponse({"error": "UNIT grading not implemented yet."}, status=400)
 
     try:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # 1) Compile Main.java and Solution.java
-            cp = compile_java_sources(temp_dir, {
-                "Solution.java": code,
-                "Main.java": harness,
-            })
-            if cp.returncode != 0:
-                return JsonResponse({"error": cp.stderr}, status=200)
-
-            # 2) Branch on question type
-            if question.question_type == "IO":
-                # For each test case, run Main with test_input
-                for tc in test_cases:
-                    out = execute_java_file("Main", temp_dir, input_data=tc.test_input)
-                    expected = tc.expected_output.strip()
-                    actual = out.strip()
-                    results.append({
-                        "input": tc.test_input,
-                        "expected_output": expected,
-                        "actual_output": actual,
-                        "passed": actual == expected
-                    })
-
+        results, compile_err, runtime_err = grade_io_question(question, code)
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
 
-    return JsonResponse({"results": results})
+    total = len(results)
+    passed_count = sum(1 for r in results if r.get("passed"))
+    failed_ids = [r["test_case_id"] for r in results if not r.get("passed")]
+
+    payload = {
+        "results": results,
+        "summary": {
+            "total": total,
+            "passed": passed_count,
+            "failed_testcase_ids": failed_ids,
+            "compile_error": compile_err or "",
+            "runtime_error": runtime_err or "",
+        }
+    }
+
+    # Only set top-level "error" when you actually want the UI error path to trigger.
+    # Compile errors should definitely trigger it.
+    if compile_err:
+        payload["error"] = compile_err
+
+        # Optional: you can return 200 here to keep fetch+json parsing simple
+        return JsonResponse(payload, status=200)
+
+    # Optional: if you want runtime errors to also show in the "compiler output" box,
+    # you can uncomment this. But note: if your JS returns early on data.error,
+    # it will stop rendering testcase details.
+    #
+    # if runtime_err:
+    #     payload["error"] = runtime_err
+
+    return JsonResponse(payload, status=200)
 
 
 @login_required(login_url='login')

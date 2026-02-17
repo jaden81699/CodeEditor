@@ -316,9 +316,7 @@
         </button>
         <div class="collapse navbar-collapse" id="navbarContent">
             <div class="me-auto">
-                <button class="btn btn-outline-secondary" id="select-language-button">
-                    Current Language: Java
-                </button>
+
             </div>
 
             <div class="d-flex align-items-center">
@@ -397,6 +395,7 @@
                                                     </div>
 
                                                     <div id="comparison-{{ question.id }}"
+                                                         data-hide-last-details="true"
                                                          class="border rounded p-2 bg-light text-dark"
                                                          style="min-height:80px; overflow-y:auto;">Comparison will
                                                         appear
@@ -631,62 +630,91 @@
         let html = `<h5 style="margin-top:12px;">Test Cases</h5>`;
 
         results.forEach((r, idx) => {
-            const input = (r.input ?? "");
-            const expected = (r.expected_output ?? "");
-            const actual = (r.actual_output ?? "");
-            const passed = !!r.passed;
+  const total = results.length;
+  const isLast = idx === total - 1;
 
-            const badge = passed
-                ? `<span style="color:#0a7a2f; font-weight:700;">✔ Passed</span>`
-                : `<span style="color:#b00020; font-weight:700;">✘ Failed</span>`;
+  // Enable per-question via HTML attribute (default false if missing)
+  const hideLastDetails = comparisonContainer?.dataset?.hideLastDetails === "true";
 
-            // If failed, compute a helpful “first mismatch” hint
-            let mismatchHint = "";
-            if (!passed) {
-                const mi = firstMismatchIndex(expected, actual);
-                if (mi >= 0) {
-                    mismatchHint = `
-          <div style="margin-top:8px; padding:8px 10px; border-left:4px solid #b00020; background: rgba(176,0,32,.06);">
-            <div style="font-weight:700; color:#b00020;">First difference at character ${mi + 1}</div>
-            <div style="margin-top:4px; font-size:.92rem;">
-              <div><strong>Expected near diff:</strong> <code>${escapeHtml(snippetAround(expected, mi))}</code></div>
-              <div><strong>Actual near diff:</strong> <code>${escapeHtml(snippetAround(actual, mi))}</code></div>
-            </div>
-          </div>
-        `;
-                }
-            }
+  // Optional: also allow the server to explicitly mark a case as hidden
+  const hideDetails = !!r.hide_details || (hideLastDetails && isLast);
 
-            const inputBlock = input
-                ? `<pre class="tc-pre">${escapeHtml(String(input).trim())}</pre>`
-                : `<div style="opacity:.7;">N/A</div>`;
+  const passed = !!r.passed;
 
-            html += `
+  const badge = passed
+    ? `<span style="color:#0a7a2f; font-weight:700;">✔ Passed</span>`
+    : `<span style="color:#b00020; font-weight:700;">✘ Failed</span>`;
+
+  // If this is the hidden (last) test case: show only number + pass/fail
+  if (hideDetails) {
+    html += `
       <div style="border:1px solid rgba(0,0,0,.15); border-radius:10px; padding:12px; margin:10px 0;">
         <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;">
           <div style="font-weight:700;">Test Case ${idx + 1}</div>
           <div>${badge}</div>
         </div>
 
-        <div style="margin-top:10px;">
-          <div style="font-weight:700; margin-bottom:4px;">Input (stdin)</div>
-          ${inputBlock}
+        <div style="margin-top:10px; opacity:.75;">
+          Details hidden for this test case.
         </div>
-
-        <div style="margin-top:10px;">
-          <div style="font-weight:700; margin-bottom:4px;">Expected Output</div>
-          <pre class="tc-pre">${escapeHtml(String(expected))}</pre>
-        </div>
-
-        <div style="margin-top:10px;">
-          <div style="font-weight:700; margin-bottom:4px;">Your Output</div>
-          <pre class="tc-pre">${escapeHtml(String(actual))}</pre>
-        </div>
-
-        ${mismatchHint}
       </div>
     `;
-        });
+    return;
+  }
+
+  // Normal (visible) test case rendering
+  const input = (r.input ?? "");
+  const expected = (r.expected_output ?? "");
+  const actual = (r.actual_output ?? "");
+
+  // Mismatch hint ONLY for visible cases (otherwise it leaks info)
+  let mismatchHint = "";
+  if (!passed) {
+    const mi = firstMismatchIndex(expected, actual);
+    if (mi >= 0) {
+      mismatchHint = `
+        <div style="margin-top:8px; padding:8px 10px; border-left:4px solid #b00020; background: rgba(176,0,32,.06);">
+          <div style="font-weight:700; color:#b00020;">First difference at character ${mi + 1}</div>
+          <div style="margin-top:4px; font-size:.92rem;">
+            <div><strong>Expected near diff:</strong> <code>${escapeHtml(snippetAround(expected, mi))}</code></div>
+            <div><strong>Actual near diff:</strong> <code>${escapeHtml(snippetAround(actual, mi))}</code></div>
+          </div>
+        </div>
+      `;
+    }
+  }
+
+  const inputBlock = input
+    ? `<pre class="tc-pre">${escapeHtml(String(input).trim())}</pre>`
+    : `<div style="opacity:.7;">N/A</div>`;
+
+  html += `
+    <div style="border:1px solid rgba(0,0,0,.15); border-radius:10px; padding:12px; margin:10px 0;">
+      <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+        <div style="font-weight:700;">Test Case ${idx + 1}</div>
+        <div>${badge}</div>
+      </div>
+
+      <div style="margin-top:10px;">
+        <div style="font-weight:700; margin-bottom:4px;">Input (stdin)</div>
+        ${inputBlock}
+      </div>
+
+      <div style="margin-top:10px;">
+        <div style="font-weight:700; margin-bottom:4px;">Expected Output</div>
+        <pre class="tc-pre">${escapeHtml(String(expected))}</pre>
+      </div>
+
+      <div style="margin-top:10px;">
+        <div style="font-weight:700; margin-bottom:4px;">Your Output</div>
+        <pre class="tc-pre">${escapeHtml(String(actual))}</pre>
+      </div>
+
+      ${mismatchHint}
+    </div>
+  `;
+});
+
 
         comparisonContainer.innerHTML = html;
     }

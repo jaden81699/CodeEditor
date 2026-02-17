@@ -58,6 +58,7 @@ class ParticipantProfile(models.Model):
                                 primary_key=True, on_delete=models.CASCADE, related_name="participantprofile")
     group = models.CharField(max_length=1, choices=GROUP_CHOICES)
     control_all_correct = models.BooleanField(default=False)
+    exp_all_wrong = models.BooleanField(default=False)
     raffle_page_completed = models.BooleanField(default=False)
 
     # Raffle gating (same pattern as pre/post)
@@ -86,18 +87,38 @@ class ParticipantProfile(models.Model):
     post_assessment_completed_at = models.DateTimeField(null=True, blank=True)
 
 
+# editor/models.py
+
 class Submission(models.Model):
-    """
-    One code submission for one question.
-    attempt_no: 1 = first round, 2 = redo round …
-    """
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     question = models.ForeignKey("editor.Questions", on_delete=models.CASCADE)
     attempt_no = models.PositiveSmallIntegerField()  # 1 or 2
-    used_ai = models.BooleanField()  # True if Gemini pane allowed
+    used_ai = models.BooleanField()
     is_correct = models.BooleanField()
-    time_spent_ms = models.PositiveIntegerField(default=0)  # total active time on this question for this attempt
+    time_spent_ms = models.PositiveIntegerField(default=0)
     timestamp = models.DateTimeField(auto_now_add=True)
+
+    # NEW: store what they submitted
+    code = models.TextField(blank=True)
+
+    # NEW: test case stats
+    total_test_cases = models.PositiveSmallIntegerField(default=0)
+    passed_test_cases = models.PositiveSmallIntegerField(default=0)
+
+    # Store WHICH specific test cases failed (stable IDs)
+    failed_testcase_ids = models.JSONField(default=list, blank=True)
+
+    # Optional but useful for analysis/debugging
+    compile_error = models.TextField(blank=True)
+    runtime_error = models.TextField(blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "question", "attempt_no"],
+                name="uniq_submission_user_question_attempt"
+            )
+        ]
 
 
 class EnrollmentCap(models.Model):

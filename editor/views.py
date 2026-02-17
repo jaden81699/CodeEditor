@@ -169,66 +169,64 @@ def editor(request):
     return resp
 
 
+from django.http import JsonResponse
+from django.views.decorators.http import require_POST
+
+
 @require_POST
 def run_code(request):
-    """
-    Compiles and executes Java code for a given question (I/O or unit test).
-    Expects POST params:
-      - code: the user’s Main.java source
-      - question_id: the ID of the Questions object to run against
-    Returns JSON: { results: [ { input, expected_output, actual_output, passed }, … ] }
-    """
-    code = request.POST.get("code", "").strip()
+    code = (request.POST.get("code") or "").strip()
     qid = request.POST.get("question_id")
 
-    # Basic validation
     if not code:
         return JsonResponse({"error": "No code provided."}, status=400)
     if not qid:
         return JsonResponse({"error": "No question_id provided."}, status=400)
 
-    # Lookup question
     try:
         question = Questions.objects.get(pk=int(qid))
     except (Questions.DoesNotExist, ValueError):
         return JsonResponse({"error": "Invalid question_id."}, status=400)
 
-    harness = (
-            question.harness_code or "").strip()  # your model includes this field :contentReference[oaicite:2]{index=2}
-    if not harness:
-        return JsonResponse(
-            {"error": "Server configuration error: harness_code (Main.java) is missing for this question."}, status=500)
-
-    test_cases = question.test_cases.all()
-    results = []
+    if question.question_type != "IO":
+        return JsonResponse({"error": "UNIT grading not implemented yet."}, status=400)
 
     try:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # 1) Compile Main.java and Solution.java
-            cp = compile_java_sources(temp_dir, {
-                "Solution.java": code,
-                "Main.java": harness,
-            })
-            if cp.returncode != 0:
-                return JsonResponse({"error": cp.stderr}, status=200)
-
-            # 2) Branch on question type
-            if question.question_type == "IO":
-                # For each test case, run Main with test_input
-                for tc in test_cases:
-                    out = execute_java_file("Main", temp_dir, input_data=tc.test_input)
-                    expected = tc.expected_output.strip()
-                    actual = out.strip()
-                    results.append({
-                        "input": tc.test_input,
-                        "expected_output": expected,
-                        "actual_output": actual,
-                        "passed": actual == expected
-                    })
+        results, compile_err, runtime_err = grade_io_question(question, code)
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
 
-    return JsonResponse({"results": results})
+    total = len(results)
+    passed_count = sum(1 for r in results if r.get("passed"))
+    failed_ids = [r["test_case_id"] for r in results if not r.get("passed")]
+
+    payload = {
+        "results": results,
+        "summary": {
+            "total": total,
+            "passed": passed_count,
+            "failed_testcase_ids": failed_ids,
+            "compile_error": compile_err or "",
+            "runtime_error": runtime_err or "",
+        }
+    }
+
+    # Only set top-level "error" when you actually want the UI error path to trigger.
+    # Compile errors should definitely trigger it.
+    if compile_err:
+        payload["error"] = compile_err
+
+        # Optional: you can return 200 here to keep fetch+json parsing simple
+        return JsonResponse(payload, status=200)
+
+    # Optional: if you want runtime errors to also show in the "compiler output" box,
+    # you can uncomment this. But note: if your JS returns early on data.error,
+    # it will stop rendering testcase details.
+    #
+    # if runtime_err:
+    #     payload["error"] = runtime_err
+
+    return JsonResponse(payload, status=200)
 
 
 # @user_passes_test(lambda u: u.is_superuser)
@@ -341,56 +339,50 @@ def submit_all(request):
     # First-pass (AI) or second-pass (no AI)?
     exp_pass = request.session.get("experimental_pass", 1)
 
-    # Prevent double-counting if the user submits twice (reload/back/etc.)
-    Submission.objects.filter(
-        user=request.user,
-        attempt_no=exp_pass,
-        question_id__in=qids_int,
-    ).delete()
-
     keep_ids = []
 
     for qid, code, spent_ms in zip(qids_int, codes, time_ms):
         question = get_object_or_404(Questions, pk=qid)
 
-        is_correct = False
-        harness = (question.harness_code or "").strip()
-        if not harness:
-            return JsonResponse(
-                {"error": f"Server configuration error: harness_code missing for question {qid}."},
-                status=500
-            )
+        compile_err = ""
+        runtime_err = ""
+        results = []
 
         try:
-            with tempfile.TemporaryDirectory() as tmp:
-                compile_proc = compile_java_sources(tmp, {
-                    "Solution.java": code,
-                    "Main.java": harness,
-                })
-
-                if compile_proc.returncode == 0:
-                    if question.question_type == "IO":
-                        is_correct = all(
-                            execute_java_file("Main", tmp, input_data=tc.test_input).strip()
-                            == tc.expected_output.strip()
-                            for tc in question.test_cases.all()
-                        )
-                    else:
-                        is_correct = False
-                else:
-                    is_correct = False
+            if question.question_type == "IO":
+                results, compile_err, runtime_err = grade_io_question(question, code)
+            else:
+                # placeholder for UNIT
+                results = []
         except Exception as e:
-            print("experimental submit_all grading error:", repr(e))
-            is_correct = False
+            compile_err = (compile_err + "\n" + repr(e)).strip()
+            results = []
 
-        Submission.objects.create(
+        total = len(results)
+        passed_count = sum(1 for r in results if r["passed"])
+        failed_ids = [r["test_case_id"] for r in results if not r["passed"]]
+
+        is_correct = (total > 0 and passed_count == total and not compile_err)
+
+        # Instead of delete+create, update or create the single row for this attempt
+        Submission.objects.update_or_create(
             user=request.user,
             question=question,
             attempt_no=exp_pass,
-            used_ai=(is_exp and exp_pass == 1),
-            is_correct=is_correct,
-            time_spent_ms=spent_ms,
+            defaults={
+                "used_ai": (is_exp and exp_pass == 1),
+                "is_correct": is_correct,
+                "time_spent_ms": spent_ms,
+                "code": code,
+                "total_test_cases": total,
+                "passed_test_cases": passed_count,
+                "failed_testcase_ids": failed_ids,
+                "compile_error": compile_err,
+                "runtime_error": runtime_err,
+            }
         )
+        print("PASS", exp_pass, "Q", qid, "total", total, "passed", passed_count, "compile?", bool(compile_err),
+              "is_correct", is_correct)
 
         if exp_pass == 1 and is_correct:
             keep_ids.append(question.id)
@@ -415,22 +407,27 @@ def submit_all(request):
 
     profile.save()
 
+
+
     if is_exp:
         if exp_pass == 1:
+            # If they didn't get any correct on pass 1, there is nothing to replay; skip forward
+            if not keep_ids:
+                profile.exp_all_wrong = True
+                profile.save(update_fields=["exp_all_wrong"])
+
+                request.session.pop("experimental_keep_ids", None)
+                request.session.pop("experimental_pass", None)
+                request.session.modified = True
+                return JsonResponse({
+                    "next": "raffle-entry",
+                    "redirect_url": reverse("raffle-entry")
+                })
+
             # For the experimental flow, pass 2 should replay the questions they got CORRECT on pass 1
             request.session["experimental_keep_ids"] = keep_ids
             request.session["experimental_pass"] = 2
             request.session.modified = True
-
-            # If they didn't get any correct on pass 1, there is nothing to replay; skip forward
-            if not keep_ids:
-                request.user.is_active = False
-                request.user.save(update_fields=["is_active"])
-                logout(request)  # end the current session
-                return JsonResponse({
-                    "next": "thank-you",
-                    "redirect_url": reverse("thank-you")
-                })
 
             return JsonResponse({
                 "next": "second-pass",
@@ -572,6 +569,67 @@ def ai_respond(request):
 
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
+
+
+def grade_io_question(question: Questions, user_code: str):
+    """
+    Returns:
+      results: list of dicts with {test_case_id, passed, input, expected_output, actual_output}
+      compile_err: str
+      runtime_err: str
+    """
+    harness = (question.harness_code or "").strip()
+    if not harness:
+        raise RuntimeError("Missing harness_code")
+
+    # Stable order so "index" is consistent
+    test_cases = list(question.test_cases.all().order_by("id"))
+
+    results = []
+    compile_err = ""
+    runtime_err = ""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cp = compile_java_sources(tmp, {
+            "Solution.java": user_code,
+            "Main.java": harness,
+        })
+
+        if cp.returncode != 0:
+            compile_err = (cp.stderr or "").strip()
+            # If compile fails, we can treat all test cases as failed (or return empty results).
+            # Returning all failed IDs is usually better for analytics.
+            for tc in test_cases:
+                results.append({
+                    "test_case_id": tc.id,
+                    "passed": False,
+                    "input": tc.test_input,
+                    "expected_output": tc.expected_output.strip(),
+                    "actual_output": "",
+                })
+            return results, compile_err, runtime_err
+
+        for tc in test_cases:
+            try:
+                out = execute_java_file("Main", tmp, input_data=tc.test_input)
+                expected = tc.expected_output.strip()
+                actual = (out or "").strip()
+                passed = (actual == expected)
+            except Exception as e:
+                runtime_err = (runtime_err + "\n" + repr(e)).strip()
+                expected = tc.expected_output.strip()
+                actual = ""
+                passed = False
+
+            results.append({
+                "test_case_id": tc.id,
+                "passed": passed,
+                "input": tc.test_input,
+                "expected_output": expected,
+                "actual_output": actual,
+            })
+
+    return results, compile_err, runtime_err
 
 
 def compile_java_sources(temp_dir: str, sources: dict[str, str]) -> subprocess.CompletedProcess:

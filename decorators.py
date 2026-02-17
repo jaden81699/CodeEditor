@@ -18,7 +18,8 @@ def done_url():
 def _eligible_for_raffle(p):
     # Control users can enter raffle immediately if they got all 3 correct on attempt 1.
     # Everyone else must complete the post-assessment first.
-    return (p.group == "C" and getattr(p, "control_all_correct", False)) or getattr(p, "post_assessment_completed", False)
+    return (p.group == "C" and getattr(p, "control_all_correct", False)) or (
+                p.group == "E" and getattr(p, "exp_all_wrong", False) or getattr(p, "post_assessment_completed", False))
 
 
 def guard_pre(view):
@@ -42,11 +43,15 @@ def guard_pre(view):
             return redirect("post-assessment")
 
         # If pre done but coding not → editor
-        if getattr(p, "pre_assessment_completed", False) and not getattr(p, "both_ai_and_non_ai_portion_of_code_assessment_completed", False):
+        if getattr(p, "pre_assessment_completed", False) and not getattr(p,
+                                                                         "both_ai_and_non_ai_portion_of_code_assessment_completed",
+                                                                         False):
             return redirect(editor_url_for(request.user))
 
         # If coding done but post not → post
-        if getattr(p, "both_ai_and_non_ai_portion_of_code_assessment_completed", False) and not getattr(p, "post_assessment_completed", False):
+        if getattr(p, "both_ai_and_non_ai_portion_of_code_assessment_completed", False) and not getattr(p,
+                                                                                                        "post_assessment_completed",
+                                                                                                        False):
             return redirect("post-assessment")
 
         # Else show pre
@@ -84,7 +89,9 @@ def guard_editor(view):
             return redirect("post-assessment")
 
         # If coding already done → post
-        if getattr(p, "both_ai_and_non_ai_portion_of_code_assessment_completed", False) and not getattr(p, "post_assessment_completed", False):
+        if getattr(p, "both_ai_and_non_ai_portion_of_code_assessment_completed", False) and not getattr(p,
+                                                                                                        "post_assessment_completed",
+                                                                                                        False):
             return redirect("post-assessment")
 
         # Else show editor
