@@ -16,11 +16,100 @@ from django.urls import reverse
 from django.views.decorators.cache import cache_control, never_cache
 from django.views.decorators.http import require_POST
 from openai import OpenAI
+from datetime import timedelta
+from django.utils import timezone
+from django.http import JsonResponse
 
 from CodeEditor import settings
 from decorators import *
 from editor.forms import QuestionsForm, TestCaseFormSet
 from editor.models import Questions, ParticipantProfile, Submission, AICall
+
+# ---- Coding time window (study design: 35 min coding + ~5 min surveys) ----
+# ---- Coding time windows (per attempt) ----
+# Example split: 23:00 + 12:00
+CODING_LIMITS_BY_PASS = {
+    1: 23 * 60,  # Attempt 1 (23 minutes)
+    2: 12 * 60,  # Attempt 2 (12 minutes)
+}
+
+# You can change these later, e.g.:
+# 1: 22 * 60 + 30,
+# 2: 12 * 60 + 30,
+
+CODING_WINDOW_START_KEY = "coding_window_started_at"
+CODING_WINDOW_DEADLINE_KEY = "coding_window_deadline_at"
+CODING_WINDOW_PASS_KEY = "coding_window_pass_no"
+
+
+def _coding_limit_for_pass(pass_no: int) -> int:
+    try:
+        p = int(pass_no)
+    except Exception:
+        p = 1
+    return int(CODING_LIMITS_BY_PASS.get(p, CODING_LIMITS_BY_PASS[1]))
+
+
+def _ensure_coding_window(request, pass_no: int):
+    """
+    Create/reuse a coding window for the CURRENT pass only.
+    - Reloading the same pass reuses the same deadline.
+    - Switching pass 1 -> pass 2 creates a NEW window with pass 2's duration.
+    """
+    now = timezone.now()
+
+    try:
+        requested_pass = int(pass_no or 1)
+    except Exception:
+        requested_pass = 1
+
+    started_iso = request.session.get(CODING_WINDOW_START_KEY)
+    deadline_iso = request.session.get(CODING_WINDOW_DEADLINE_KEY)
+    stored_pass = request.session.get(CODING_WINDOW_PASS_KEY)
+
+    # Reuse only if the stored window belongs to the same pass
+    if started_iso and deadline_iso and str(stored_pass) == str(requested_pass):
+        try:
+            started_at = timezone.datetime.fromisoformat(started_iso)
+            deadline_at = timezone.datetime.fromisoformat(deadline_iso)
+
+            if timezone.is_naive(started_at):
+                started_at = timezone.make_aware(started_at, timezone.get_current_timezone())
+            if timezone.is_naive(deadline_at):
+                deadline_at = timezone.make_aware(deadline_at, timezone.get_current_timezone())
+
+            return started_at, deadline_at
+        except Exception:
+            pass  # fall through and recreate
+
+    # New window for this pass
+    limit_seconds = _coding_limit_for_pass(requested_pass)
+    started_at = now
+    deadline_at = now + timedelta(seconds=limit_seconds)
+
+    request.session[CODING_WINDOW_START_KEY] = started_at.isoformat()
+    request.session[CODING_WINDOW_DEADLINE_KEY] = deadline_at.isoformat()
+    request.session[CODING_WINDOW_PASS_KEY] = requested_pass
+    request.session.modified = True
+
+    return started_at, deadline_at
+
+
+def _get_coding_window(request, pass_no=None):
+    """
+    Returns (started_at, deadline_at) for the requested coding pass.
+    If pass_no is omitted, default to the current experimental_pass in session.
+    """
+    if pass_no is None:
+        pass_no = request.session.get("experimental_pass", 1)
+    return _ensure_coding_window(request, pass_no)
+
+
+def _clear_coding_window(request):
+    request.session.pop(CODING_WINDOW_START_KEY, None)
+    request.session.pop(CODING_WINDOW_DEADLINE_KEY, None)
+    request.session.pop(CODING_WINDOW_PASS_KEY, None)
+    request.session.modified = True
 
 
 def _difficulty_label(question) -> str:
@@ -144,6 +233,10 @@ def editor(request):
     attempt1_difficulty_summary = get_difficulty_summary(request.user, 1)
     attempt2_difficulty_summary = get_difficulty_summary(request.user, 2)
 
+    coding_started_at, coding_deadline_at = _ensure_coding_window(request, exp_pass)
+    now = timezone.now()
+    remaining_seconds = max(0, int((coding_deadline_at - now).total_seconds()))
+
     resp = render(request, "experimental_app/editor.html", {
         "questions": questions,
         "is_experimental": is_experimental,
@@ -163,20 +256,30 @@ def editor(request):
         # optional profile counters (if your template uses them)
         "first_score": profile.first_attempt_correct,
         "exp_failed": profile.first_attempt_incorrect,
+
+        "coding_deadline_epoch_ms": int(coding_deadline_at.timestamp() * 1000),
+        "coding_remaining_seconds": remaining_seconds,
+        "coding_limit_seconds": _coding_limit_for_pass(exp_pass),
     })
     resp["Cross-Origin-Opener-Policy"] = "same-origin"
     resp["Cross-Origin-Embedder-Policy"] = "require-corp"
     return resp
 
 
-from django.http import JsonResponse
-from django.views.decorators.http import require_POST
 
-
+@login_required(login_url='login')
 @require_POST
 def run_code(request):
     code = (request.POST.get("code") or "").strip()
     qid = request.POST.get("question_id")
+
+    exp_pass = request.session.get("experimental_pass", 1)
+    _, coding_deadline_at = _get_coding_window(request, exp_pass)
+    if timezone.now() >= coding_deadline_at:
+        return JsonResponse({
+            "error": "Coding time is up. Please submit your work.",
+            "deadline_reached": True
+        }, status=403)
 
     if not code:
         return JsonResponse({"error": "No code provided."}, status=400)
@@ -407,8 +510,6 @@ def submit_all(request):
 
     profile.save()
 
-
-
     if is_exp:
         if exp_pass == 1:
             # If they didn't get any correct on pass 1, there is nothing to replay; skip forward
@@ -419,6 +520,7 @@ def submit_all(request):
                 request.session.pop("experimental_keep_ids", None)
                 request.session.pop("experimental_pass", None)
                 request.session.modified = True
+                _clear_coding_window(request)
                 return JsonResponse({
                     "next": "raffle-entry",
                     "redirect_url": reverse("raffle-entry")
@@ -428,7 +530,7 @@ def submit_all(request):
             request.session["experimental_keep_ids"] = keep_ids
             request.session["experimental_pass"] = 2
             request.session.modified = True
-
+            _clear_coding_window(request)
             return JsonResponse({
                 "next": "second-pass",
                 "redirect_url": reverse("experimental_app:editor")
@@ -436,6 +538,7 @@ def submit_all(request):
 
         profile.both_ai_and_non_ai_portion_of_code_assessment_completed = True
         profile.save()
+        _clear_coding_window(request)
         return JsonResponse({
             "status": "redirect",
             "redirect_url": reverse("post-assessment")

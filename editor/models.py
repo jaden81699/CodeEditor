@@ -150,9 +150,6 @@ class AICall(models.Model):
     conversation_id = models.CharField(max_length=128, db_index=True)
     turn_index = models.PositiveIntegerField()
 
-    # Optional label you can set client-side or infer server-side ("hints", "debug", "direct")
-    mode = models.CharField(max_length=16, blank=True)
-
     user_text = models.TextField()
     assistant_text = models.TextField(blank=True)
 
@@ -163,10 +160,6 @@ class AICall(models.Model):
     # OpenAI metadata
     openai_response_id = models.CharField(max_length=128, blank=True)
     model = models.CharField(max_length=64, blank=True)
-    prompt_tokens = models.IntegerField(null=True, blank=True)
-    completion_tokens = models.IntegerField(null=True, blank=True)
-    total_tokens = models.IntegerField(null=True, blank=True)
-    latency_ms = models.IntegerField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
 

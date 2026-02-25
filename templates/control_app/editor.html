@@ -360,6 +360,7 @@
         </div>
     </div>
 </nav>
+<div id="time-warning-banner" class="alert alert-warning d-none mb-0 rounded-0 text-center py-2" role="alert"></div>
 
 <!-- Main Content -->
 <div class="container-fluid main-content py-3">
@@ -375,6 +376,11 @@
                                 <div class="d-flex flex-column">
                                     <span class="fw-semibold">Question Set</span>
                                     <small id="q-counter" class="opacity-75"></small>
+                                    <small id="coding-countdown" class="opacity-75"></small>
+                                    <small id="coding-phase-note" class="text-light-emphasis"
+                                           style="font-size: 0.78rem; line-height: 1.2;">
+                                        ⓘ Time shown is for the current coding phase. Please pace yourself.
+                                    </small>
                                 </div>
                                 <div class="d-flex align-items-center gap-2">
                                     <button type="button" class="btn btn-sm btn-outline-light" id="q-prev">Prev</button>
@@ -481,8 +487,7 @@
                         aria-label="Close"></button>
             </div>
             <div class="modal-body small">
-                You may use the <strong>AI Tool</strong> on this attempt. Keep questions targeted; don’t paste full
-                solutions.
+                You may use the <strong>AI Tool</strong> on this attempt. Keep questions targeted; Feel free to use the AI tool in a way you feel is appropriate to solve the questions.
             </div>
             <div class="modal-footer">
                 <button class="btn btn-outline-light" data-bs-dismiss="modal">Got it</button>
@@ -925,57 +930,102 @@
     }
 
     // 3) Submit-all (collects every question, including ones never visited)
+    // Shared submit function (manual + auto-submit timer both use this)
+    window.__submitAllInFlight = false;
+
+    window.submitAllWork = async function submitAllWork({ auto = false } = {}) {
+        if (window.__submitAllInFlight) return;
+        window.__submitAllInFlight = true;
+
+        // Capture final active question timing slice
+        if (window.timingFlushActive) window.timingFlushActive();
+
+        const btn = document.getElementById("submit-all");
+        const forms = document.querySelectorAll(".question-submit-form");
+        const warningBanner = document.getElementById("time-warning-banner");
+
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = auto ? "Auto-submitting…" : "Submitting…";
+        }
+
+        const data = new URLSearchParams();
+
+        forms.forEach(form => {
+            const qid = form.querySelector("input[name='question_id']")?.value;
+            if (!qid) return;
+
+            const code = getCodeForQuestion(qid);
+
+            data.append("question_id", qid);
+            data.append("code", code);
+
+            const spentMs = (window.timingGetMs ? window.timingGetMs(qid) : 0);
+            data.append("time_spent_ms", String(spentMs));
+        });
+
+        // optional audit flag (backend can ignore if you don’t use it)
+        data.append("auto_submitted", auto ? "1" : "0");
+
+        const csrf = document.querySelector("[name=csrfmiddlewaretoken]")?.value || "";
+        data.append("csrfmiddlewaretoken", csrf);
+
+        let redirected = false;
+
+        try {
+            const resp = await fetch("{% url 'control_app:submit-all' %}", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: data
+            });
+
+            const json = await resp.json();
+
+            if (!resp.ok) {
+                throw new Error(json?.error || "Submission failed.");
+            }
+
+            if (json.redirect_url) {
+                clearDraftsForCurrentAttempt();
+                redirected = true;
+                window.location.href = json.redirect_url;
+                return json;
+            }
+
+            // fallback
+            redirected = true;
+            window.location.href = "{% url 'control_app:editor' %}";
+            return json;
+        } catch (e) {
+            console.error("Submit All failed:", e);
+
+            if (warningBanner) {
+                warningBanner.textContent = auto
+                    ? "Coding time ended, but auto-submit failed. Please click Submit All now."
+                    : `Submit failed: ${e.message || e}`;
+                warningBanner.classList.remove("d-none");
+            }
+
+            throw e;
+        } finally {
+            if (!redirected && btn) {
+                btn.disabled = false;
+                btn.textContent = "Submit All";
+            }
+            window.__submitAllInFlight = false;
+        }
+    };
+
     function initSubmitAll() {
         const btn = document.getElementById("submit-all");
         if (!btn) return;
 
         btn.addEventListener("click", async () => {
-            // Capture the last active slice before we read timings
-            if (window.timingFlushActive) window.timingFlushActive();
-
-            const forms = document.querySelectorAll(".question-submit-form");
-            btn.disabled = true;
-            btn.textContent = "Submitting…";
-
-            const data = new URLSearchParams();
-
-            forms.forEach(form => {
-                const qid = form.querySelector("input[name='question_id']")?.value;
-                if (!qid) return;
-
-                const code = getCodeForQuestion(qid);
-
-                data.append("question_id", qid);
-                data.append("code", code);
-
-                const spentMs = (window.timingGetMs ? window.timingGetMs(qid) : 0);
-                data.append("time_spent_ms", String(spentMs));
-            });
-
-            data.append("csrfmiddlewaretoken", document.querySelector("[name=csrfmiddlewaretoken]")?.value || "");
-
             try {
-                const resp = await fetch("{% url 'control_app:submit-all' %}", {
-                    method: "POST",
-                    credentials: "same-origin",
-                    headers: {"Content-Type": "application/x-www-form-urlencoded"},
-                    body: data
-                });
-
-                const json = await resp.json();
-
-                if (json.redirect_url) {
-                    clearDraftsForCurrentAttempt(); // ✅ clear only after success
-                    window.location.href = json.redirect_url;
-                    return;
-                }
-
-                window.location.href = "{% url 'control_app:editor' %}";
+                await window.submitAllWork({ auto: false });
             } catch (e) {
-                console.error(e);
-                // Best-effort: re-enable so user can try again
-                btn.disabled = false;
-                btn.textContent = "Submit All";
+                // error already handled in submitAllWork
             }
         });
     }
@@ -1130,6 +1180,17 @@
         prog && (prog.textContent = "Load failed: " + err.message);
         throw err;
     });
+</script>
+
+<script>
+    window.codingTimerConfig = {
+        deadlineEpochMs: {{ coding_deadline_epoch_ms|default:"null" }},
+        remainingSecondsOnLoad: {{ coding_remaining_seconds|default:0 }},
+        warnAtSeconds: [300, 120, 60], // 5 min, 2 min, 1 min
+        {#deadlineEpochMs: Date.now() + 60000, // 60 seconds from now#}
+        {#remainingSecondsOnLoad: 60,#}
+        {#warnAtSeconds: [30, 10, 5],#}
+    };
 </script>
 
 
@@ -1490,6 +1551,122 @@
 
         render();
     });
+</script>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+    const cfg = window.codingTimerConfig || {};
+    const deadlineEpochMs = Number(cfg.deadlineEpochMs);
+    if (!Number.isFinite(deadlineEpochMs) || deadlineEpochMs <= 0) return;
+
+    const countdownEl = document.getElementById("coding-countdown");
+    const warningBanner = document.getElementById("time-warning-banner");
+
+    // Use a monotonic clock so changing system time mid-session doesn't break countdown
+    const wallClockAtStart = Date.now();
+    const perfAtStart = performance.now();
+
+    const warned = new Set();
+    let autoSubmitted = false;
+
+    function nowMsStable() {
+        return wallClockAtStart + (performance.now() - perfAtStart);
+    }
+
+    function fmtRemaining(ms) {
+        ms = Math.max(0, Math.floor(ms));
+        const totalSec = Math.floor(ms / 1000);
+        const m = Math.floor(totalSec / 60);
+        const s = totalSec % 60;
+        return `${m}:${String(s).padStart(2, "0")}`;
+    }
+
+    function showWarning(text) {
+        if (!warningBanner) return;
+        warningBanner.textContent = text;
+        warningBanner.classList.remove("d-none");
+    }
+
+    function disableCodingUI() {
+        // Disable run buttons
+        document.querySelectorAll(".run-code-btn").forEach(b => b.disabled = true);
+
+        // Make Monaco editors read-only
+        if (window.editors) {
+            Object.values(window.editors).forEach(ed => {
+                try {
+                    ed.updateOptions({ readOnly: true });
+                } catch (e) {}
+            });
+        }
+
+        // Disable AI input/send too (optional, but usually cleaner at time expiration)
+        const aiInput = document.getElementById("user-input");
+        const sendBtn = document.getElementById("send-btn");
+        if (aiInput) aiInput.disabled = true;
+        if (sendBtn) sendBtn.disabled = true;
+    }
+
+    async function onTimeExpired() {
+        if (autoSubmitted) return;
+        autoSubmitted = true;
+
+        showWarning("Coding time has ended. Submitting your current work now…");
+        disableCodingUI();
+
+        try {
+            if (typeof window.submitAllWork === "function") {
+                await window.submitAllWork({ auto: true });
+            } else {
+                console.error("submitAllWork() is not available");
+            }
+        } catch (e) {
+            console.error("Auto-submit failed:", e);
+            showWarning("Coding time ended. Auto-submit failed — please click Submit All now.");
+        }
+    }
+
+    // If page loads after deadline, submit immediately
+    let intervalId = null;
+
+    function tick() {
+        const remainingMs = deadlineEpochMs - nowMsStable();
+        const remainingSec = Math.ceil(remainingMs / 1000);
+
+        if (countdownEl) {
+            countdownEl.textContent = `Coding time remaining: ${fmtRemaining(remainingMs)}`;
+            if (remainingSec <= 300) {
+                countdownEl.classList.add("text-warning");
+            }
+            if (remainingSec <= 60) {
+                countdownEl.classList.add("text-danger");
+            }
+        }
+
+        // Warnings at thresholds
+        const warnAt = Array.isArray(cfg.warnAtSeconds) ? cfg.warnAtSeconds : [300, 120, 60];
+        for (const sec of warnAt) {
+            if (remainingSec <= sec && !warned.has(sec) && remainingSec > 0) {
+                warned.add(sec);
+                if (sec === 300) showWarning("5 minutes remaining. Please prepare to submit.");
+                else if (sec === 120) showWarning("2 minutes remaining. Finalize your code.");
+                else if (sec === 60) showWarning("1 minute remaining. Your work will auto-submit.");
+                else showWarning(`${sec} seconds remaining.`);
+            }
+        }
+
+        if (remainingMs <= 0) {
+            clearInterval(intervalId);
+            if (countdownEl) {
+                countdownEl.textContent = "Coding time remaining: 0:00";
+            }
+            onTimeExpired();
+        }
+    }
+
+    intervalId = setInterval(tick, 1000);
+    tick();
+});
 </script>
 
 </body>
