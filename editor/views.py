@@ -615,7 +615,6 @@ def ai_respond(request):
                 attempt_no=attempt_no,
                 conversation_id=conv,
                 turn_index=turn_index,
-                mode=mode,
                 user_text=user_text,
                 history_turn_ids_sent=history_ids,
                 history_window_size=len(history_ids),
@@ -662,10 +661,6 @@ def ai_respond(request):
                 assistant_text=out_text,
                 openai_response_id=str(getattr(resp, "id", "") or ""),
                 model=str(DEFAULT_MODEL),
-                prompt_tokens=usage.get("input_tokens"),
-                completion_tokens=usage.get("output_tokens"),
-                total_tokens=usage.get("total_tokens"),
-                latency_ms=latency_ms,
             )
 
         return JsonResponse({"text": out_text})
