@@ -50,13 +50,18 @@ class Profile(models.Model):
 
 class ParticipantProfile(models.Model):
     """Extra info that doesn’t belong on auth.User."""
+    UNASSIGNED = "U"
     CONTROL = "C"
     EXPERIMENTAL = "E"
-    GROUP_CHOICES = [(CONTROL, "Control"), (EXPERIMENTAL, "Experimental")]
+    GROUP_CHOICES = [
+        (UNASSIGNED, "Unassigned"),
+        (CONTROL, "Control"),
+        (EXPERIMENTAL, "Experimental"),
+    ]
 
     user = models.OneToOneField(settings.AUTH_USER_MODEL,
                                 primary_key=True, on_delete=models.CASCADE, related_name="participantprofile")
-    group = models.CharField(max_length=1, choices=GROUP_CHOICES)
+    group = models.CharField(max_length=1, choices=GROUP_CHOICES, default=UNASSIGNED, db_index=True)
     control_all_correct = models.BooleanField(default=False)
     exp_all_wrong = models.BooleanField(default=False)
     raffle_page_completed = models.BooleanField(default=False)

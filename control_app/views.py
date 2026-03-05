@@ -7,7 +7,7 @@ import tempfile
 import secrets
 from datetime import datetime
 from pathlib import Path
-from sqlite3 import IntegrityError
+from django.db import IntegrityError
 
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
@@ -113,6 +113,7 @@ def _get_coding_window(request, pass_no=None):
     if pass_no is None:
         pass_no = request.session.get("control_pass", 1)
     return _ensure_coding_window(request, pass_no)
+
 
 def _clear_coding_window(request):
     request.session.pop(CODING_WINDOW_START_KEY, None)
@@ -614,18 +615,8 @@ def pre_assessment_questionnaire(request):
 @transaction.atomic
 def pre_assessment_complete(request):
     user = request.user
-    profile = (user.participantprofile.__class__.objects
-               .select_for_update().get(pk=user.participantprofile.pk))
 
-    # If already completed, be idempotent: just go to the editor for their group.
-    if profile.pre_assessment_completed:
-        if profile.group == "C":
-            return redirect("control_app:editor")
-        if profile.group == "E":
-            return redirect("experimental_app:editor")
-        # If no group yet, assign now and continue.
-
-    # --- 1) Read and verify inputs ---
+    # --- 1) Read and verify inputs (cheap checks first) ---
     state = request.GET.get("state")
     response_id = request.GET.get("responseId")  # optional but useful
     q_uid = request.GET.get("uid")  # optional cross-check
@@ -633,39 +624,66 @@ def pre_assessment_complete(request):
     if not state:
         return HttpResponseBadRequest("Missing state")
 
-    # Require that Qualtrics returned within (e.g.) 2 hours
     try:
-        token = signer.unsign(state, max_age=7200)  # seconds
+        token = signer.unsign(state, max_age=7200)  # 2 hours
     except SignatureExpired:
         return HttpResponseForbidden("State expired")
     except BadSignature:
         return HttpResponseForbidden("Invalid state")
 
-    # Token must match what we issued to this logged-in user
-    if token != (profile.pre_assessment_token or ""):
-        return HttpResponseForbidden("Token mismatch")
-
-    # Optional: uid mismatch warning (doesn't control which profile we write)
     if q_uid and str(q_uid) != str(user.pk):
         return HttpResponseForbidden("UID mismatch")
 
-    # --- 2) Mark completion & clear token ---
+    # --- 2) Lock the profile row (now that signature is valid) ---
+    profile = (
+        ParticipantProfile.objects
+        .select_for_update()
+        .get(user=user)
+    )
+
+    # --- 3) Idempotency: if already completed, ensure group exists then redirect ---
+    if profile.pre_assessment_completed:
+        # If you use UNASSIGNED, check it here
+        if getattr(ParticipantProfile, "UNASSIGNED", None) and profile.group == ParticipantProfile.UNASSIGNED:
+            from randomize_block_permutation import assign_group
+            assign_group(user)
+            profile.refresh_from_db(fields=["group"])
+
+        if profile.group == "C":
+            return redirect("control_app:editor")
+        if profile.group == "E":
+            return redirect("experimental_app:editor")
+        return HttpResponseBadRequest("Couldn't find your group")
+
+    # --- 4) Token must match what we issued to THIS user ---
+    if token != (profile.pre_assessment_token or ""):
+        return HttpResponseForbidden("Token mismatch")
+
+    # --- 5) Mark completion & clear token ---
     profile.pre_assessment_completed = True
     profile.pre_assessment_response_id = response_id or ""
-    profile.pre_assessment_token = ""  # one-time use
-    profile.pre_assessment_completed_at = datetime.now()  # add this field if you like
+    profile.pre_assessment_token = ""
+    profile.pre_assessment_completed_at = timezone.now()
     profile.save(update_fields=[
-        "pre_assessment_completed", "pre_assessment_response_id",
-        "pre_assessment_token", "pre_assessment_completed_at"
+        "pre_assessment_completed",
+        "pre_assessment_response_id",
+        "pre_assessment_token",
+        "pre_assessment_completed_at",
     ])
 
-    # --- 3) Assign group AFTER verified completion ---
-    if not profile.group:
+    # --- 6) Assign group AFTER verified completion ---
+    # If you implement UNASSIGNED, use that; otherwise keep your current check.
+    if getattr(ParticipantProfile, "UNASSIGNED", None):
+        needs_assign = (profile.group == ParticipantProfile.UNASSIGNED)
+    else:
+        needs_assign = (not profile.group)
+
+    if needs_assign:
         from randomize_block_permutation import assign_group
-        assign_group(user)  # respects your 130/130 caps
+        assign_group(user)
         profile.refresh_from_db(fields=["group"])
 
-    # --- 4) Redirect to the correct editor ---
+    # --- 7) Redirect to the correct editor ---
     if profile.group == "C":
         return redirect("control_app:editor")
     if profile.group == "E":

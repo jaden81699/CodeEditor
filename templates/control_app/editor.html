@@ -1184,12 +1184,12 @@
 
 <script>
     window.codingTimerConfig = {
-        deadlineEpochMs: {{ coding_deadline_epoch_ms|default:"null" }},
-        remainingSecondsOnLoad: {{ coding_remaining_seconds|default:0 }},
-        warnAtSeconds: [300, 120, 60], // 5 min, 2 min, 1 min
-        {#deadlineEpochMs: Date.now() + 60000, // 60 seconds from now#}
-        {#remainingSecondsOnLoad: 60,#}
-        {#warnAtSeconds: [30, 10, 5],#}
+        {#deadlineEpochMs: {{ coding_deadline_epoch_ms|default:"null" }},#}
+        {#remainingSecondsOnLoad: {{ coding_remaining_seconds|default:0 }},#}
+        {#warnAtSeconds: [300, 120, 60], // 5 min, 2 min, 1 min#}
+        deadlineEpochMs: Date.now() + 60000, // 60 seconds from now
+        remainingSecondsOnLoad: 60,
+        warnAtSeconds: [30, 10, 5],
     };
 </script>
 
