@@ -30,6 +30,7 @@ from CodeEditor import settings
 from decorators import *
 from editor.models import ParticipantProfile, Questions, Submission, AITelemetry
 from editor.views import compile_java_file, execute_java_file, compile_java_sources, grade_io_question
+from method_and_class_validator import _validate_submission_contract
 
 signer = TimestampSigner(salt="pre-survey-v1")
 
@@ -558,6 +559,11 @@ def run_code(request):
 
     if question.question_type != "IO":
         return JsonResponse({"error": "UNIT grading not implemented yet."}, status=400)
+
+    # Validate class name / method contract before running the harness
+    contract_error = _validate_submission_contract(question, code)
+    if contract_error:
+        return JsonResponse({"error": contract_error}, status=200)
 
     try:
         results, compile_err, runtime_err = grade_io_question(question, code)

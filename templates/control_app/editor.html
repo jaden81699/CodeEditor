@@ -5,7 +5,8 @@
     <meta charset="UTF-8">
     <meta name="ai-telemetry-url" content="{% url 'ai_telemetry' %}">
     <meta name="ai-respond-url" content="{% url 'ai_respond' %}">
-    <script>document.documentElement.classList.add("js"); window.aiContext = {attemptNo: {{ attempt_no|default:1 }}, questionId: null};</script>
+    <script>document.documentElement.classList.add("js");
+    window.aiContext = {attemptNo: {{ attempt_no|default:1 }}, questionId: null};</script>
     <title>AI-Assisted Programming</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <!-- Bootstrap CSS -->
@@ -278,7 +279,6 @@
         }
 
 
-
         /* AI typing label (so dots don't feel "stuck") */
         .typing-wrap {
             display: inline-flex;
@@ -300,8 +300,13 @@
         }
 
         /* Question pagination (show one question at a time when JS is enabled) */
-        html.js .question-page { display: none; }
-        html.js .question-page.active { display: block; }
+        html.js .question-page {
+            display: none;
+        }
+
+        html.js .question-page.active {
+            display: block;
+        }
 
         .question-body code {
             padding: 0.12rem 0.35rem;
@@ -326,6 +331,111 @@
 
         .question-body ul {
             margin: 6px 0 10px 0;
+        }
+
+        /* Full-screen start overlay shown before coding begins */
+        #attempt-start-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            background: #0f1115;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        #attempt-start-overlay.show {
+            display: flex;
+        }
+
+        #attempt-start-overlay .start-panel {
+            width: min(980px, 96vw);
+            max-height: 92vh;
+            overflow-y: auto;
+            border-radius: 16px;
+            background: #1b1f27;
+            color: #f5f7fb;
+            border: 1px solid rgba(255, 255, 255, .08);
+            box-shadow: 0 20px 50px rgba(0, 0, 0, .45);
+        }
+
+        #attempt-start-overlay .start-header {
+            padding: 18px 22px;
+            background: #0d6efd;
+            color: white;
+            font-weight: 700;
+            font-size: 1.1rem;
+        }
+
+        #attempt-start-overlay .start-body {
+            padding: 20px 22px 10px 22px;
+        }
+
+        #attempt-start-overlay .start-body p {
+            margin-bottom: 12px;
+        }
+
+        #attempt-start-overlay .start-image-wrap {
+            display: flex;
+            justify-content: center;
+            margin: 10px 0 18px 0;
+        }
+
+        #attempt-start-overlay .start-sections {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 14px;
+            margin-top: 8px;
+        }
+
+        #attempt-start-overlay .start-section {
+            padding: 12px 14px;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, .04);
+            border: 1px solid rgba(255, 255, 255, .06);
+        }
+
+        #attempt-start-overlay .start-section-title {
+            font-weight: 700;
+            margin-bottom: 6px;
+            color: #ffffff;
+        }
+
+        #attempt-start-overlay .start-section ul {
+            margin: 0 0 0 1.1rem;
+            padding: 0;
+        }
+
+        #attempt-start-overlay .start-section li {
+            margin-bottom: 6px;
+            line-height: 1.4;
+        }
+
+        #attempt-start-overlay .start-note {
+            padding: 12px 14px;
+            border-left: 4px solid #ffc107;
+            background: rgba(255, 193, 7, .10);
+            border-radius: 8px;
+            margin-top: 12px;
+        }
+
+        #attempt-start-overlay .start-footer {
+            padding: 16px 22px 22px 22px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
+        body.prestart-lock {
+            overflow: hidden;
+        }
+
+        /* Slightly denser layout on wider screens */
+        @media (min-width: 900px) {
+            #attempt-start-overlay .start-sections {
+                grid-template-columns: 1fr 1fr;
+            }
         }
 
     </style>
@@ -362,6 +472,69 @@
 </nav>
 <div id="time-warning-banner" class="alert alert-warning d-none mb-0 rounded-0 text-center py-2" role="alert"></div>
 
+<!-- Modal that should appear on every page load -->
+{% if show_ai and attempt_no == 2 %}
+    <div id="attempt-start-overlay" aria-modal="true" role="dialog" aria-labelledby="attempt-start-title">
+        <div class="start-panel">
+            <div class="start-header" id="attempt-start-title">
+                AI assistance is available on this attempt
+            </div>
+
+            <div class="start-body">
+                <p>
+                    Please review the information below before you begin coding.
+                </p>
+
+                <div class="start-image-wrap">
+                    <img
+                            src="{% static 'images/annotated-ai-editor.png' %}"
+                            alt="Annotated screenshot showing the AI assistance panel, Run Code button, and timer"
+                            class="start-image"
+                    >
+                </div>
+
+                <div class="start-sections">
+                    <div class="start-section">
+                        <div class="start-section-title">AI assistance on this attempt</div>
+                        <ul>
+                            <li>AI is available on this attempt.</li>
+                            <li>You can ask questions in the AI panel.</li>
+                            <li>AI may help explain, debug, or suggest code.</li>
+                            <li>You are still responsible for checking your final answer.</li>
+                        </ul>
+                    </div>
+
+                    <div class="start-section">
+                        <div class="start-section-title">Required class and method</div>
+                        <ul>
+                            <li>Keep the required class name and method signature from the starter code.</li>
+                            <li>Renaming them may cause your solution not to run correctly.</li>
+                        </ul>
+                    </div>
+
+                    <div class="start-section">
+                        <div class="start-section-title">Timer</div>
+                        <ul>
+                            <li>The timer begins when you press <strong>Begin Coding</strong>.</li>
+                            <li>The timer remains visible during coding.</li>
+                            <li>Your work may be auto-submitted when time expires.</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class="start-note">
+                    If you see an error after using AI, make sure the required method name and method signature
+                    still match the starter code shown in the editor.
+                </div>
+            </div>
+
+            <div class="start-footer">
+                <button type="button" class="btn btn-primary" id="begin-coding-btn">Begin Coding</button>
+            </div>
+        </div>
+    </div>
+{% endif %}
+
 <!-- Main Content -->
 <div class="container-fluid main-content py-3">
     <div class="row g-3 h-100">
@@ -392,49 +565,53 @@
                                     <div style="display:none">{% csrf_token %}</div>
 
                                     {% for question in questions %}
-                                        <div class="question-page{% if forloop.first %} active{% endif %}" data-question-id="{{ question.id }}" data-index="{{ forloop.counter0 }}">
-                                        <form class="question-submit-form" method="POST"
-                                              action="{% url 'control_app:submit-all' %}">
-                                            {% csrf_token %}
-                                            <input type="hidden" name="question_id" value="{{ question.id }}">
-                                            <input type="hidden" name="code" class="code-input" value="">
-                                            <input type="hidden" name="attempt_no"
-                                                   value="{% if is_control and control_pass == 2 %}2{% else %}1{% endif %}"/>
+                                        <div class="question-page{% if forloop.first %} active{% endif %}"
+                                             data-question-id="{{ question.id }}" data-index="{{ forloop.counter0 }}">
+                                            <form class="question-submit-form" method="POST"
+                                                  action="{% url 'control_app:submit-all' %}">
+                                                {% csrf_token %}
+                                                <input type="hidden" name="question_id" value="{{ question.id }}">
+                                                <input type="hidden" name="code" class="code-input" value="">
+                                                <input type="hidden" name="attempt_no"
+                                                       value="{% if is_control and control_pass == 2 %}2{% else %}1{% endif %}"/>
 
-                                            <div class="card mb-4 shadow-sm">
-                                                <div class="card-header bg-secondary text-white">
-                                                   <b> Question {{ forloop.counter }}: {{ question.question_name }}</b></div>
-                                                <div class="card-body">
-                                                    <div class="question-body"
-                                                         style="">{{ question.question_string|safe }}</div>
-
-                                                    <div id="editor-{{ question.id }}"
-                                                         class="monaco-editor-container mb-3"
-                                                         data-question-id="{{ question.id }}"
-                                                         data-starter-code="{{ question.user_starter_code }}"></div>
-
-                                                    <button type="button" class="btn btn-success run-code-btn mb-3"
-                                                            data-question-id="{{ question.id }}"
-                                                            data-attempt-no="{{ attempt_no }}">
-                                                        Run Code
-                                                    </button>
-
-                                                    <div id="output-{{ question.id }}"
-                                                         class="border rounded p-2 mb-2 bg-light text-dark"
-                                                         style="min-height:80px; overflow-y:auto;">Output will appear
-                                                        here…
+                                                <div class="card mb-4 shadow-sm">
+                                                    <div class="card-header bg-secondary text-white">
+                                                        <b>
+                                                            Question {{ forloop.counter }}: {{ question.question_name }}</b>
                                                     </div>
+                                                    <div class="card-body">
+                                                        <div class="question-body"
+                                                             style="">{{ question.question_string|safe }}</div>
 
-                                                    <div id="comparison-{{ question.id }}"
-                                                         data-hide-last-details="true"
-                                                         class="border rounded p-2 bg-light text-dark"
-                                                         style="min-height:80px; overflow-y:auto;">Comparison will
-                                                        appear
-                                                        here…
+                                                        <div id="editor-{{ question.id }}"
+                                                             class="monaco-editor-container mb-3"
+                                                             data-question-id="{{ question.id }}"
+                                                             data-starter-code="{{ question.user_starter_code }}"></div>
+
+                                                        <button type="button" class="btn btn-success run-code-btn mb-3"
+                                                                data-question-id="{{ question.id }}"
+                                                                data-attempt-no="{{ attempt_no }}">
+                                                            Run Code
+                                                        </button>
+
+                                                        <div id="output-{{ question.id }}"
+                                                             class="border rounded p-2 mb-2 bg-light text-dark"
+                                                             style="min-height:80px; overflow-y:auto;">Output will
+                                                            appear
+                                                            here…
+                                                        </div>
+
+                                                        <div id="comparison-{{ question.id }}"
+                                                             data-hide-last-details="true"
+                                                             class="border rounded p-2 bg-light text-dark"
+                                                             style="min-height:80px; overflow-y:auto;">Comparison will
+                                                            appear
+                                                            here…
+                                                        </div>
                                                     </div>
                                                 </div>
-                                            </div>
-                                        </form>
+                                            </form>
                                         </div>
                                     {% endfor %}
                                 </div>
@@ -477,24 +654,6 @@
     </div>
 </div>
 
-<!-- Modal that should appear on every page load -->
-<div class="modal fade" id="aiHelpModal" tabindex="-1" aria-labelledby="aiHelpTitle" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content bg-dark text-white border border-info">
-            <div class="modal-header">
-                <h5 class="modal-title" id="aiHelpTitle">AI assistance available</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"
-                        aria-label="Close"></button>
-            </div>
-            <div class="modal-body small">
-                You may use the <strong>AI Tool</strong> on this attempt. Keep questions targeted; Feel free to use the AI tool in a way you feel is appropriate to solve the questions.
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-outline-light" data-bs-dismiss="modal">Got it</button>
-            </div>
-        </div>
-    </div>
-</div>
 
 <!-- Toast that should show each load (dismissible) -->
 <div class="position-fixed bottom-0 end-0 p-3" style="z-index: 1100;">
@@ -660,24 +819,24 @@
         let html = `<h5 style="margin-top:12px;">Test Cases</h5>`;
 
         results.forEach((r, idx) => {
-  const total = results.length;
-  const isLast = idx === total - 1;
+            const total = results.length;
+            const isLast = idx === total - 1;
 
-  // Enable per-question via HTML attribute (default false if missing)
-  const hideLastDetails = comparisonContainer?.dataset?.hideLastDetails === "true";
+            // Enable per-question via HTML attribute (default false if missing)
+            const hideLastDetails = comparisonContainer?.dataset?.hideLastDetails === "true";
 
-  // Optional: also allow the server to explicitly mark a case as hidden
-  const hideDetails = !!r.hide_details || (hideLastDetails && isLast);
+            // Optional: also allow the server to explicitly mark a case as hidden
+            const hideDetails = !!r.hide_details || (hideLastDetails && isLast);
 
-  const passed = !!r.passed;
+            const passed = !!r.passed;
 
-  const badge = passed
-    ? `<span style="color:#0a7a2f; font-weight:700;">✔ Passed</span>`
-    : `<span style="color:#b00020; font-weight:700;">✘ Failed</span>`;
+            const badge = passed
+                ? `<span style="color:#0a7a2f; font-weight:700;">✔ Passed</span>`
+                : `<span style="color:#b00020; font-weight:700;">✘ Failed</span>`;
 
-  // If this is the hidden (last) test case: show only number + pass/fail
-  if (hideDetails) {
-    html += `
+            // If this is the hidden (last) test case: show only number + pass/fail
+            if (hideDetails) {
+                html += `
       <div style="border:1px solid rgba(0,0,0,.15); border-radius:10px; padding:12px; margin:10px 0;">
         <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;">
           <div style="font-weight:700;">Test Case ${idx + 1}</div>
@@ -689,20 +848,20 @@
         </div>
       </div>
     `;
-    return;
-  }
+                return;
+            }
 
-  // Normal (visible) test case rendering
-  const input = (r.input ?? "");
-  const expected = (r.expected_output ?? "");
-  const actual = (r.actual_output ?? "");
+            // Normal (visible) test case rendering
+            const input = (r.input ?? "");
+            const expected = (r.expected_output ?? "");
+            const actual = (r.actual_output ?? "");
 
-  // Mismatch hint ONLY for visible cases (otherwise it leaks info)
-  let mismatchHint = "";
-  if (!passed) {
-    const mi = firstMismatchIndex(expected, actual);
-    if (mi >= 0) {
-      mismatchHint = `
+            // Mismatch hint ONLY for visible cases (otherwise it leaks info)
+            let mismatchHint = "";
+            if (!passed) {
+                const mi = firstMismatchIndex(expected, actual);
+                if (mi >= 0) {
+                    mismatchHint = `
         <div style="margin-top:8px; padding:8px 10px; border-left:4px solid #b00020; background: rgba(176,0,32,.06);">
           <div style="font-weight:700; color:#b00020;">First difference at character ${mi + 1}</div>
           <div style="margin-top:4px; font-size:.92rem;">
@@ -711,14 +870,14 @@
           </div>
         </div>
       `;
-    }
-  }
+                }
+            }
 
-  const inputBlock = input
-    ? `<pre class="tc-pre">${escapeHtml(String(input).trim())}</pre>`
-    : `<div style="opacity:.7;">N/A</div>`;
+            const inputBlock = input
+                ? `<pre class="tc-pre">${escapeHtml(String(input).trim())}</pre>`
+                : `<div style="opacity:.7;">N/A</div>`;
 
-  html += `
+            html += `
     <div style="border:1px solid rgba(0,0,0,.15); border-radius:10px; padding:12px; margin:10px 0;">
       <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;">
         <div style="font-weight:700;">Test Case ${idx + 1}</div>
@@ -743,7 +902,7 @@
       ${mismatchHint}
     </div>
   `;
-});
+        });
 
 
         comparisonContainer.innerHTML = html;
@@ -765,7 +924,6 @@
     if (!submitAllBtn) {
         console.error("❌ #submit-all button not found!");
     }
-
 
 
     // 1) Monaco editors (lazy init; important when non-active questions are display:none)
@@ -829,7 +987,8 @@
                                 const {position, scrollTop} = JSON.parse(savedPos);
                                 if (position) editor.setPosition(position);
                                 if (typeof scrollTop === 'number') editor.setScrollTop(scrollTop);
-                            } catch {}
+                            } catch {
+                            }
                         }
 
                         editor.onDidChangeCursorPosition(debounce(() => {
@@ -838,12 +997,17 @@
                                     position: editor.getPosition(),
                                     scrollTop: editor.getScrollTop()
                                 }));
-                            } catch {}
+                            } catch {
+                            }
                         }, 400));
 
                         // If you still want diagnostics, keep it incremental
                         if (typeof initManualDiagnostics === 'function') {
-                            try { initManualDiagnostics(window.editors); } catch (e) { console.warn(e); }
+                            try {
+                                initManualDiagnostics(window.editors);
+                            } catch (e) {
+                                console.warn(e);
+                            }
                         }
 
                         resolve(editor);
@@ -933,7 +1097,7 @@
     // Shared submit function (manual + auto-submit timer both use this)
     window.__submitAllInFlight = false;
 
-    window.submitAllWork = async function submitAllWork({ auto = false } = {}) {
+    window.submitAllWork = async function submitAllWork({auto = false} = {}) {
         if (window.__submitAllInFlight) return;
         window.__submitAllInFlight = true;
 
@@ -976,7 +1140,7 @@
             const resp = await fetch("{% url 'control_app:submit-all' %}", {
                 method: "POST",
                 credentials: "same-origin",
-                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                headers: {"Content-Type": "application/x-www-form-urlencoded"},
                 body: data
             });
 
@@ -1023,7 +1187,7 @@
 
         btn.addEventListener("click", async () => {
             try {
-                await window.submitAllWork({ auto: false });
+                await window.submitAllWork({auto: false});
             } catch (e) {
                 // error already handled in submitAllWork
             }
@@ -1033,17 +1197,8 @@
 
     // 4) AI UI (toast, modal, pulse, telemetry)
     function initAiUi() {
-        const aiEnabled = {{ show_ai|yesno:"true,false" }};
-        if (!aiEnabled) return;
-
-        const toastEl = document.getElementById('aiToast');
-        const modalEl = document.getElementById('aiHelpModal');
-
-        // Show “AI available” toast every load (dismissible)
-        if (toastEl) bootstrap.Toast.getOrCreateInstance(toastEl, {autohide: false}).show();
-
-        // Show the info modal once on load
-        if (modalEl) bootstrap.Modal.getOrCreateInstance(modalEl, {backdrop: true, keyboard: true}).show();
+        // Intentionally no-op now.
+        // We use the full-screen start overlay for AI-enabled second attempts instead.
     }
 
     // 6) Navbar sizing
@@ -1067,40 +1222,40 @@
 
 <!-- Helper function for AI responses (formatting code blocks, bullet lists, numbered lists, etc.) -->
 <script type="text/javascript">
-  function processListFormatting(line) {
-    if (/^\s*([-*+])\s+/.test(line)) return wrapInList(line, "ul");
-    if (/^\s*\d+\.\s+/.test(line)) return wrapInList(line, "ol");
-    return line;
-  }
-
-  function wrapInList(line, type) {
-    const content = line.replace(/^\s*([-*+]|\d+\.)\s+/, "");
-    return `<${type}><li>${content}</li></${type}>`;
-  }
-
-  function formatTextBlock(block) {
-    // Escape everything, then apply lightweight list formatting.
-    const lines = escapeHtml(String(block)).split("\n");
-    return lines.map(processListFormatting).join("<br>");
-  }
-
-  function formatAIResponse(text) {
-    // Render assistant text safely; keep code blocks intact.
-    const re = /```(?:java)?\s*([\s\S]*?)```/g;
-    let out = "";
-    let last = 0;
-    let match;
-
-    while ((match = re.exec(text)) !== null) {
-      out += formatTextBlock(text.slice(last, match.index));
-      const code = match[1] ?? "";
-      out += `<pre><code class="language-java">${escapeHtml(code.trim())}</code></pre>`;
-      last = re.lastIndex;
+    function processListFormatting(line) {
+        if (/^\s*([-*+])\s+/.test(line)) return wrapInList(line, "ul");
+        if (/^\s*\d+\.\s+/.test(line)) return wrapInList(line, "ol");
+        return line;
     }
 
-    out += formatTextBlock(text.slice(last));
-    return out;
-  }
+    function wrapInList(line, type) {
+        const content = line.replace(/^\s*([-*+]|\d+\.)\s+/, "");
+        return `<${type}><li>${content}</li></${type}>`;
+    }
+
+    function formatTextBlock(block) {
+        // Escape everything, then apply lightweight list formatting.
+        const lines = escapeHtml(String(block)).split("\n");
+        return lines.map(processListFormatting).join("<br>");
+    }
+
+    function formatAIResponse(text) {
+        // Render assistant text safely; keep code blocks intact.
+        const re = /```(?:java)?\s*([\s\S]*?)```/g;
+        let out = "";
+        let last = 0;
+        let match;
+
+        while ((match = re.exec(text)) !== null) {
+            out += formatTextBlock(text.slice(last, match.index));
+            const code = match[1] ?? "";
+            out += `<pre><code class="language-java">${escapeHtml(code.trim())}</code></pre>`;
+            last = re.lastIndex;
+        }
+
+        out += formatTextBlock(text.slice(last));
+        return out;
+    }
 </script>
 
 
@@ -1184,12 +1339,12 @@
 
 <script>
     window.codingTimerConfig = {
-        {#deadlineEpochMs: {{ coding_deadline_epoch_ms|default:"null" }},#}
-        {#remainingSecondsOnLoad: {{ coding_remaining_seconds|default:0 }},#}
-        {#warnAtSeconds: [300, 120, 60], // 5 min, 2 min, 1 min#}
-        deadlineEpochMs: Date.now() + 60000, // 60 seconds from now
-        remainingSecondsOnLoad: 60,
-        warnAtSeconds: [30, 10, 5],
+        //deadlineEpochMs: {{ coding_deadline_epoch_ms|default:"null" }},
+        remainingSecondsOnLoad: {{ coding_remaining_seconds|default:0 }},
+        warnAtSeconds: [300, 120, 60], // 5 min, 2 min, 1 min
+        {#deadlineEpochMs: Date.now() + 60000, // 60 seconds from now#}
+        {#remainingSecondsOnLoad: 60,#}
+        {#warnAtSeconds: [30, 10, 5],#}
     };
 </script>
 
@@ -1554,119 +1709,159 @@
 </script>
 
 <script>
-document.addEventListener("DOMContentLoaded", () => {
-    const cfg = window.codingTimerConfig || {};
-    const deadlineEpochMs = Number(cfg.deadlineEpochMs);
-    if (!Number.isFinite(deadlineEpochMs) || deadlineEpochMs <= 0) return;
+    window.__codingTimerStarted = false;
 
-    const countdownEl = document.getElementById("coding-countdown");
-    const warningBanner = document.getElementById("time-warning-banner");
+    window.startCodingTimer = function startCodingTimer() {
+        if (window.__codingTimerStarted) return;
+        window.__codingTimerStarted = true;
 
-    // Use a monotonic clock so changing system time mid-session doesn't break countdown
-    const wallClockAtStart = Date.now();
-    const perfAtStart = performance.now();
+        const cfg = window.codingTimerConfig || {};
+        const remainingSeconds = Number(cfg.remainingSecondsOnLoad);
+        if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) return;
 
-    const warned = new Set();
-    let autoSubmitted = false;
+        const countdownEl = document.getElementById("coding-countdown");
+        const warningBanner = document.getElementById("time-warning-banner");
 
-    function nowMsStable() {
-        return wallClockAtStart + (performance.now() - perfAtStart);
-    }
+        const startedAtPerf = performance.now();
+        const durationMs = remainingSeconds * 1000;
+        const deadlinePerf = startedAtPerf + durationMs;
 
-    function fmtRemaining(ms) {
-        ms = Math.max(0, Math.floor(ms));
-        const totalSec = Math.floor(ms / 1000);
-        const m = Math.floor(totalSec / 60);
-        const s = totalSec % 60;
-        return `${m}:${String(s).padStart(2, "0")}`;
-    }
+        const warned = new Set();
+        let autoSubmitted = false;
+        let intervalId = null;
 
-    function showWarning(text) {
-        if (!warningBanner) return;
-        warningBanner.textContent = text;
-        warningBanner.classList.remove("d-none");
-    }
-
-    function disableCodingUI() {
-        // Disable run buttons
-        document.querySelectorAll(".run-code-btn").forEach(b => b.disabled = true);
-
-        // Make Monaco editors read-only
-        if (window.editors) {
-            Object.values(window.editors).forEach(ed => {
-                try {
-                    ed.updateOptions({ readOnly: true });
-                } catch (e) {}
-            });
+        function fmtRemaining(ms) {
+            ms = Math.max(0, Math.floor(ms));
+            const totalSec = Math.floor(ms / 1000);
+            const m = Math.floor(totalSec / 60);
+            const s = totalSec % 60;
+            return `${m}:${String(s).padStart(2, "0")}`;
         }
 
-        // Disable AI input/send too (optional, but usually cleaner at time expiration)
+        function showWarning(text) {
+            if (!warningBanner) return;
+            warningBanner.textContent = text;
+            warningBanner.classList.remove("d-none");
+        }
+
+        function disableCodingUI() {
+            document.querySelectorAll(".run-code-btn").forEach(b => b.disabled = true);
+
+            if (window.editors) {
+                Object.values(window.editors).forEach(ed => {
+                    try {
+                        ed.updateOptions({readOnly: true});
+                    } catch (e) {
+                    }
+                });
+            }
+
+            const aiInput = document.getElementById("user-input");
+            const sendBtn = document.getElementById("send-btn");
+            if (aiInput) aiInput.disabled = true;
+            if (sendBtn) sendBtn.disabled = true;
+        }
+
+        async function onTimeExpired() {
+            if (autoSubmitted) return;
+            autoSubmitted = true;
+
+            showWarning("Coding time has ended. Submitting your current work now…");
+            disableCodingUI();
+
+            try {
+                if (typeof window.submitAllWork === "function") {
+                    await window.submitAllWork({auto: true});
+                }
+            } catch (e) {
+                console.error("Auto-submit failed:", e);
+                showWarning("Coding time ended. Auto-submit failed — please click Submit All now.");
+            }
+        }
+
+        function tick() {
+            const remainingMs = deadlinePerf - performance.now();
+            const remainingSec = Math.ceil(remainingMs / 1000);
+
+            if (countdownEl) {
+                countdownEl.textContent = `Coding time remaining: ${fmtRemaining(remainingMs)}`;
+                if (remainingSec <= 300) countdownEl.classList.add("text-warning");
+                if (remainingSec <= 60) countdownEl.classList.add("text-danger");
+            }
+
+            const warnAt = Array.isArray(cfg.warnAtSeconds) ? cfg.warnAtSeconds : [300, 120, 60];
+            for (const sec of warnAt) {
+                if (remainingSec <= sec && !warned.has(sec) && remainingSec > 0) {
+                    warned.add(sec);
+                    if (sec === 300) showWarning("5 minutes remaining. Please prepare to submit.");
+                    else if (sec === 120) showWarning("2 minutes remaining. Finalize your code.");
+                    else if (sec === 60) showWarning("1 minute remaining. Your work will auto-submit.");
+                }
+            }
+
+            if (remainingMs <= 0) {
+                clearInterval(intervalId);
+                if (countdownEl) countdownEl.textContent = "Coding time remaining: 0:00";
+                onTimeExpired();
+            }
+        }
+
+        intervalId = setInterval(tick, 1000);
+        tick();
+    };
+</script>
+
+<script>
+    document.addEventListener("DOMContentLoaded", () => {
+        const needsOverlay =
+        {{ show_ai|yesno:"true,false" }} && {{ attempt_no|default:1 }} ===
+        2;
+
+        if (!needsOverlay) {
+            window.startCodingTimer();
+        }
+    });
+</script>
+
+<script>
+    document.addEventListener("DOMContentLoaded", () => {
+        const needsOverlay =
+        {{ show_ai|yesno:"true,false" }} && {{ attempt_no|default:1 }} ===
+        2;
+        const overlay = document.getElementById("attempt-start-overlay");
+        const beginBtn = document.getElementById("begin-coding-btn");
+
+        if (!needsOverlay || !overlay || !beginBtn) return;
+
+        // Lock page scrolling and show overlay
+        document.body.classList.add("prestart-lock");
+        overlay.classList.add("show");
+
+        // Optional: make AI/editor controls inactive until Begin is clicked
+        document.querySelectorAll(".run-code-btn").forEach(b => b.disabled = true);
         const aiInput = document.getElementById("user-input");
         const sendBtn = document.getElementById("send-btn");
         if (aiInput) aiInput.disabled = true;
         if (sendBtn) sendBtn.disabled = true;
-    }
 
-    async function onTimeExpired() {
-        if (autoSubmitted) return;
-        autoSubmitted = true;
+        beginBtn.addEventListener("click", () => {
+            overlay.classList.remove("show");
+            document.body.classList.remove("prestart-lock");
 
-        showWarning("Coding time has ended. Submitting your current work now…");
-        disableCodingUI();
+            // Re-enable controls
+            document.querySelectorAll(".run-code-btn").forEach(b => b.disabled = false);
+            if (aiInput) aiInput.disabled = false;
+            if (sendBtn) sendBtn.disabled = false;
 
-        try {
-            if (typeof window.submitAllWork === "function") {
-                await window.submitAllWork({ auto: true });
-            } else {
-                console.error("submitAllWork() is not available");
+            // Start the timer only now
+            if (typeof window.startCodingTimer === "function") {
+                window.startCodingTimer();
             }
-        } catch (e) {
-            console.error("Auto-submit failed:", e);
-            showWarning("Coding time ended. Auto-submit failed — please click Submit All now.");
-        }
-    }
 
-    // If page loads after deadline, submit immediately
-    let intervalId = null;
-
-    function tick() {
-        const remainingMs = deadlineEpochMs - nowMsStable();
-        const remainingSec = Math.ceil(remainingMs / 1000);
-
-        if (countdownEl) {
-            countdownEl.textContent = `Coding time remaining: ${fmtRemaining(remainingMs)}`;
-            if (remainingSec <= 300) {
-                countdownEl.classList.add("text-warning");
-            }
-            if (remainingSec <= 60) {
-                countdownEl.classList.add("text-danger");
-            }
-        }
-
-        // Warnings at thresholds
-        const warnAt = Array.isArray(cfg.warnAtSeconds) ? cfg.warnAtSeconds : [300, 120, 60];
-        for (const sec of warnAt) {
-            if (remainingSec <= sec && !warned.has(sec) && remainingSec > 0) {
-                warned.add(sec);
-                if (sec === 300) showWarning("5 minutes remaining. Please prepare to submit.");
-                else if (sec === 120) showWarning("2 minutes remaining. Finalize your code.");
-                else if (sec === 60) showWarning("1 minute remaining. Your work will auto-submit.");
-                else showWarning(`${sec} seconds remaining.`);
-            }
-        }
-
-        if (remainingMs <= 0) {
-            clearInterval(intervalId);
-            if (countdownEl) {
-                countdownEl.textContent = "Coding time remaining: 0:00";
-            }
-            onTimeExpired();
-        }
-    }
-
-    intervalId = setInterval(tick, 1000);
-    tick();
-});
+            // Put cursor in AI box if you want
+            if (aiInput) aiInput.focus();
+        });
+    });
 </script>
 
 </body>

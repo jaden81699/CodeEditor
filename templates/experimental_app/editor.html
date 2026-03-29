@@ -331,6 +331,122 @@
             margin: 6px 0 10px 0;
         }
 
+        /* Full-screen start overlay shown before coding begins */
+        #attempt-start-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            background: #0f1115;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        #attempt-start-overlay.show {
+            display: flex;
+        }
+
+        #attempt-start-overlay .start-panel {
+            width: min(760px, 95vw);
+            border-radius: 16px;
+            background: #1b1f27;
+            color: #f5f7fb;
+            border: 1px solid rgba(255, 255, 255, .08);
+            box-shadow: 0 20px 50px rgba(0, 0, 0, .45);
+            overflow: hidden;
+        }
+
+        #attempt-start-overlay .start-header {
+            padding: 18px 22px;
+            background: #0d6efd;
+            color: white;
+            font-weight: 700;
+            font-size: 1.1rem;
+        }
+
+        #attempt-start-overlay .start-body {
+            padding: 20px 22px 10px 22px;
+        }
+
+        #attempt-start-overlay .start-body p {
+            margin-bottom: 12px;
+        }
+
+        /* Start overlay media + instructions */
+        #attempt-start-overlay .start-image-wrap {
+            display: flex;
+            justify-content: center;
+            margin: 10px 0 18px 0;
+        }
+
+        #attempt-start-overlay .start-panel {
+            width: min(980px, 96vw);
+            max-height: 92vh;
+            overflow-y: auto;
+            border-radius: 16px;
+            background: #1b1f27;
+            color: #f5f7fb;
+            border: 1px solid rgba(255, 255, 255, .08);
+            box-shadow: 0 20px 50px rgba(0, 0, 0, .45);
+        }
+
+        #attempt-start-overlay .start-sections {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 14px;
+            margin-top: 8px;
+        }
+
+        #attempt-start-overlay .start-section {
+            padding: 12px 14px;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, .04);
+            border: 1px solid rgba(255, 255, 255, .06);
+        }
+
+        #attempt-start-overlay .start-section-title {
+            font-weight: 700;
+            margin-bottom: 6px;
+            color: #ffffff;
+        }
+
+        #attempt-start-overlay .start-section ul {
+            margin: 0 0 0 1.1rem;
+            padding: 0;
+        }
+
+        #attempt-start-overlay .start-section li {
+            margin-bottom: 6px;
+            line-height: 1.4;
+        }
+
+        #attempt-start-overlay .start-note {
+            padding: 12px 14px;
+            border-left: 4px solid #ffc107;
+            background: rgba(255, 193, 7, .10);
+            border-radius: 8px;
+            margin-top: 12px;
+        }
+
+        #attempt-start-overlay .start-footer {
+            padding: 16px 22px 22px 22px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
+        body.prestart-lock {
+            overflow: hidden;
+        }
+
+        /* Slightly denser layout on wider screens */
+        @media (min-width: 900px) {
+            #attempt-start-overlay .start-sections {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -362,6 +478,69 @@
     </div>
 </nav>
 <div id="time-warning-banner" class="alert alert-warning d-none mb-0 rounded-0 text-center py-2" role="alert"></div>
+
+<!-- Modal that should appear on every page load -->
+{% if show_ai and attempt_no == 1 %}
+    <div id="attempt-start-overlay" aria-modal="true" role="dialog" aria-labelledby="attempt-start-title">
+        <div class="start-panel">
+            <div class="start-header" id="attempt-start-title">
+                AI assistance is available on this attempt
+            </div>
+
+            <div class="start-body">
+                <p>
+                    Please review the information below before you begin coding.
+                </p>
+
+                <div class="start-image-wrap">
+                    <img
+                            src="{% static 'images/annotated-ai-editor.png' %}"
+                            alt="Annotated screenshot showing the AI assistance panel, Run Code button, and timer"
+                            class="start-image"
+                    >
+                </div>
+
+                <div class="start-sections">
+                    <div class="start-section">
+                        <div class="start-section-title">AI assistance on this attempt</div>
+                        <ul>
+                            <li>AI is available on this attempt.</li>
+                            <li>You can ask questions in the AI panel.</li>
+                            <li>AI may help explain, debug, or suggest code.</li>
+                            <li>You are still responsible for checking your final answer.</li>
+                        </ul>
+                    </div>
+
+                    <div class="start-section">
+                        <div class="start-section-title">Required class and method</div>
+                        <ul>
+                            <li>Keep the required class name and method signature from the starter code.</li>
+                            <li>Renaming them may cause your solution not to run correctly.</li>
+                        </ul>
+                    </div>
+
+                    <div class="start-section">
+                        <div class="start-section-title">Timer</div>
+                        <ul>
+                            <li>The timer begins when you press <strong>Begin Coding</strong>.</li>
+                            <li>The timer remains visible during coding.</li>
+                            <li>Your work may be auto-submitted when time expires.</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class="start-note">
+                    If you see an error after using AI, make sure the required method name and method signature
+                    still match the starter code shown in the editor.
+                </div>
+            </div>
+
+            <div class="start-footer">
+                <button type="button" class="btn btn-primary" id="begin-coding-btn">Begin Coding</button>
+            </div>
+        </div>
+    </div>
+{% endif %}
 
 <!-- Main Content -->
 <div class="container-fluid main-content py-3">
@@ -483,26 +662,6 @@
     </div>
 </div>
 
-<!-- Modal that should appear on every page load -->
-<div class="modal fade" id="aiHelpModal" tabindex="-1" aria-labelledby="aiHelpTitle" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content bg-dark text-white border border-info">
-            <div class="modal-header">
-                <h5 class="modal-title" id="aiHelpTitle">AI assistance available</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"
-                        aria-label="Close"></button>
-            </div>
-            <div class="modal-body small">
-                You may use the <strong>AI Tool</strong> on this attempt. Keep questions targeted; Feel free to use the
-                AI tool in a way you feel is appropriate to solve the questions.
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-outline-light" data-bs-dismiss="modal">Got it</button>
-            </div>
-        </div>
-    </div>
-</div>
-
 {% if show_ai %}
     <!-- Toast that should show each load (dismissible) -->
     <div class="position-fixed bottom-0 end-0 p-3" style="z-index: 1100;">
@@ -612,7 +771,7 @@
 
 <script>
     window.codingTimerConfig = {
-        deadlineEpochMs: {{ coding_deadline_epoch_ms|default:"null" }},
+        // deadlineEpochMs: {{ coding_deadline_epoch_ms|default:"null" }},
         remainingSecondsOnLoad: {{ coding_remaining_seconds|default:0 }},
         warnAtSeconds: [300, 120, 60], // 5 min, 2 min, 1 min
         {#deadlineEpochMs: Date.now() + 60000, // 60 seconds from now#}
@@ -1646,15 +1805,34 @@
 </script>
 
 <script>
-    document.addEventListener("DOMContentLoaded", () => {
+    window.__codingTimerStarted = false;
+    window.__codingTimerIntervalId = null;
+
+    window.startCodingTimer = async function startCodingTimer() {
+        if (window.__codingTimerStarted) return;
+        window.__codingTimerStarted = true;
+
         const cfg = window.codingTimerConfig || {};
-        const deadlineEpochMs = Number(cfg.deadlineEpochMs);
-        if (!Number.isFinite(deadlineEpochMs) || deadlineEpochMs <= 0) return;
+
+        // Support either a server-provided absolute deadline or remaining seconds.
+        let deadlineEpochMs = Number(cfg.deadlineEpochMs);
+
+        if (!Number.isFinite(deadlineEpochMs) || deadlineEpochMs <= 0) {
+            const remainingSecondsOnLoad = Number(cfg.remainingSecondsOnLoad);
+            if (Number.isFinite(remainingSecondsOnLoad) && remainingSecondsOnLoad > 0) {
+                deadlineEpochMs = Date.now() + (remainingSecondsOnLoad * 1000);
+            }
+        }
+
+        if (!Number.isFinite(deadlineEpochMs) || deadlineEpochMs <= 0) {
+            console.error("Coding timer could not start: no valid deadline found.");
+            window.__codingTimerStarted = false;
+            return;
+        }
 
         const countdownEl = document.getElementById("coding-countdown");
         const warningBanner = document.getElementById("time-warning-banner");
 
-        // Stable clock (won't break if system time changes while page is open)
         const wallClockAtStart = Date.now();
         const perfAtStart = performance.now();
 
@@ -1686,7 +1864,7 @@
                 Object.values(window.editors).forEach(ed => {
                     try {
                         ed.updateOptions({readOnly: true});
-                    } catch {
+                    } catch (e) {
                     }
                 });
             }
@@ -1704,14 +1882,26 @@
             showWarning("Coding time has ended. Submitting your current work now…");
             disableCodingUI();
 
-            // Use your existing submit button handler
-            const submitBtn = document.getElementById("submit-all");
-            if (submitBtn && !submitBtn.disabled) {
-                submitBtn.click();
+            try {
+                // Prefer an explicit submit helper if you later expose one globally
+                if (typeof window.submitAllWork === "function") {
+                    await window.submitAllWork({auto: true});
+                    return;
+                }
+
+                // Fallback to your existing button-based submit flow
+                const submitBtn = document.getElementById("submit-all");
+                if (submitBtn && !submitBtn.disabled) {
+                    submitBtn.click();
+                } else {
+                    console.error("submit-all button not available for auto-submit");
+                    showWarning("Coding time ended. Auto-submit could not start — please click Submit All now.");
+                }
+            } catch (e) {
+                console.error("Auto-submit failed:", e);
+                showWarning("Coding time ended. Auto-submit failed — please click Submit All now.");
             }
         }
-
-        let intervalId = null;
 
         function tick() {
             const remainingMs = deadlineEpochMs - nowMsStable();
@@ -1719,6 +1909,7 @@
 
             if (countdownEl) {
                 countdownEl.textContent = `Coding time remaining: ${fmtRemaining(remainingMs)}`;
+
                 if (remainingSec <= 300) countdownEl.classList.add("text-warning");
                 if (remainingSec <= 60) countdownEl.classList.add("text-danger");
             }
@@ -1727,6 +1918,7 @@
             for (const sec of warnAt) {
                 if (remainingSec <= sec && !warned.has(sec) && remainingSec > 0) {
                     warned.add(sec);
+
                     if (sec === 300) showWarning("5 minutes remaining. Please prepare to submit.");
                     else if (sec === 120) showWarning("2 minutes remaining. Finalize your code.");
                     else if (sec === 60) showWarning("1 minute remaining. Your work will auto-submit.");
@@ -1735,14 +1927,56 @@
             }
 
             if (remainingMs <= 0) {
-                clearInterval(intervalId);
-                if (countdownEl) countdownEl.textContent = "Coding time remaining: 0:00";
+                clearInterval(window.__codingTimerIntervalId);
+                window.__codingTimerIntervalId = null;
+
+                if (countdownEl) {
+                    countdownEl.textContent = "Coding time remaining: 0:00";
+                }
+
                 onTimeExpired();
             }
         }
 
-        intervalId = setInterval(tick, 1000);
+        window.__codingTimerIntervalId = setInterval(tick, 1000);
         tick();
+    };
+
+    document.addEventListener("DOMContentLoaded", () => {
+        const needsOverlay =
+        {{ show_ai|yesno:"true,false" }} && {{ attempt_no|default:1 }} ===
+        1;
+        const overlay = document.getElementById("attempt-start-overlay");
+        const beginBtn = document.getElementById("begin-coding-btn");
+
+        // If overlay is required, do NOT start timer yet.
+        if (needsOverlay && overlay && beginBtn) {
+            document.body.classList.add("prestart-lock");
+            overlay.classList.add("show");
+
+            document.querySelectorAll(".run-code-btn").forEach(b => b.disabled = true);
+
+            const aiInput = document.getElementById("user-input");
+            const sendBtn = document.getElementById("send-btn");
+            if (aiInput) aiInput.disabled = true;
+            if (sendBtn) sendBtn.disabled = true;
+
+            beginBtn.addEventListener("click", () => {
+                overlay.classList.remove("show");
+                document.body.classList.remove("prestart-lock");
+
+                document.querySelectorAll(".run-code-btn").forEach(b => b.disabled = false);
+                if (aiInput) aiInput.disabled = false;
+                if (sendBtn) sendBtn.disabled = false;
+
+                window.startCodingTimer();
+            }, {once: true});
+
+            return;
+        }
+
+        // No overlay needed: start immediately
+        window.startCodingTimer();
     });
 </script>
 

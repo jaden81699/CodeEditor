@@ -24,6 +24,7 @@ from CodeEditor import settings
 from decorators import *
 from editor.forms import QuestionsForm, TestCaseFormSet
 from editor.models import Questions, ParticipantProfile, Submission, AICall
+from method_and_class_validator import _validate_submission_contract
 
 # ---- Coding time window (study design: 35 min coding + ~5 min surveys) ----
 # ---- Coding time windows (per attempt) ----
@@ -293,6 +294,11 @@ def run_code(request):
 
     if question.question_type != "IO":
         return JsonResponse({"error": "UNIT grading not implemented yet."}, status=400)
+
+    # Validate class name / method contract before running the harness
+    contract_error = _validate_submission_contract(question, code)
+    if contract_error:
+        return JsonResponse({"error": contract_error}, status=200)
 
     try:
         results, compile_err, runtime_err = grade_io_question(question, code)
