@@ -447,6 +447,42 @@
             }
         }
 
+        /* Prevent flex children from forcing the AI card wider */
+        #chat-body,
+        #chat-body .msg,
+        #chat-body .bubble {
+            min-width: 0;
+            max-width: 100%;
+        }
+
+        /* Keep message rows from overflowing the card */
+        #chat-body .msg {
+            width: 100%;
+        }
+
+        /* Let the bubble shrink inside the flex row */
+        #chat-body .bubble {
+            overflow-x: hidden;
+            box-sizing: border-box;
+        }
+
+        /* Code blocks should scroll internally, not expand the card */
+        #chat-body .bubble pre {
+            max-width: 100%;
+            width: 100%;
+            box-sizing: border-box;
+            overflow-x: auto;
+            overflow-y: hidden;
+            white-space: pre;
+        }
+
+        /* Inline code / highlighted code should not stretch parent width */
+        #chat-body .bubble pre code {
+            display: block;
+            min-width: 0;
+            max-width: 100%;
+        }
+
     </style>
 </head>
 <body>
@@ -690,6 +726,7 @@
                     <ul class="mb-0">
                         <li>For this attempt, you must solve the problems <strong>without</strong> AI.</li>
                         <li>Focus on reasoning and code quality.</li>
+                        <li>Pasting into the editor is disabled on this attempt.</li>
                     </ul>
                 </div>
                 <div class="modal-footer">
@@ -783,38 +820,134 @@
 
 <!-- Helper function for AI responses (formatting code blocks, bullet lists, numbered lists, etc.) -->
 <script type="text/javascript">
-    // Safely render assistant output (prevents Java generics like <Integer> from being eaten by HTML)
-    function formatAIResponse(text) {
-        const re = /```(?:java)?\s*([\s\S]*?)```/g;
-        let out = "";
-        let last = 0;
-        let match;
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, ch =>
+            ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch])
+        );
+    }
 
-        while ((match = re.exec(text)) !== null) {
-            out += formatTextBlock(text.slice(last, match.index));
-            const code = match[1] ?? "";
-            out += `<pre><code class="language-java">${escapeHtml(code.trim())}</code></pre>`;
-            last = re.lastIndex;
+    function normalizeLanguage(lang) {
+        const raw = String(lang || '').trim().toLowerCase();
+        if (!raw) return 'java';
+        if (raw === 'jav') return 'java';
+        if (raw === 'js') return 'javascript';
+        return raw;
+    }
+
+    function looksLikeJava(text) {
+        const s = String(text || '');
+        const signals = [
+            /\bclass\s+[A-Z_][A-Za-z0-9_]*\b/,
+            /\bpublic\s+class\b/,
+            /\bpublic\s+static\s+void\s+main\s*\(/,
+            /\bSystem\.out\.print(?:ln)?\s*\(/,
+            /\bimport\s+java\./,
+            /\bArrayList<.*?>/,
+            /\bScanner\s+[A-Za-z_][A-Za-z0-9_]*\s*=/,
+            /\b(?:int|double|String|boolean|char|long)\s+[a-zA-Z_][A-Za-z0-9_]*\s*(=|;)/
+        ];
+        return signals.some(re => re.test(s));
+    }
+
+    function renderParagraphsAndLists(text) {
+        const lines = escapeHtml(String(text || '')).split('\n');
+        let html = '';
+        let inUl = false;
+        let inOl = false;
+
+        const closeLists = () => {
+            if (inUl) {
+                html += '</ul>';
+                inUl = false;
+            }
+            if (inOl) {
+                html += '</ol>';
+                inOl = false;
+            }
+        };
+
+        for (const rawLine of lines) {
+            const line = rawLine.trimEnd();
+
+            if (!line.trim()) {
+                closeLists();
+                html += '<br>';
+                continue;
+            }
+
+            if (/^\s*[-*+]\s+/.test(line)) {
+                if (inOl) {
+                    html += '</ol>';
+                    inOl = false;
+                }
+                if (!inUl) {
+                    html += '<ul>';
+                    inUl = true;
+                }
+                html += `<li>${line.replace(/^\s*[-*+]\s+/, '')}</li>`;
+                continue;
+            }
+
+            if (/^\s*\d+\.\s+/.test(line)) {
+                if (inUl) {
+                    html += '</ul>';
+                    inUl = false;
+                }
+                if (!inOl) {
+                    html += '<ol>';
+                    inOl = true;
+                }
+                html += `<li>${line.replace(/^\s*\d+\.\s+/, '')}</li>`;
+                continue;
+            }
+
+            closeLists();
+            html += `${line}<br>`;
         }
 
-        out += formatTextBlock(text.slice(last));
-        return out;
+        closeLists();
+        return html;
     }
 
-    function formatTextBlock(block) {
-        const lines = escapeHtml(String(block ?? "")).split("\n");
-        return lines.map(processListFormatting).join("<br>");
+    function renderCodeBlock(code, lang = 'java') {
+        const safeLang = normalizeLanguage(lang);
+        return `<pre><code class="language-${safeLang}">${escapeHtml(code.trim())}</code></pre>`;
     }
 
-    function processListFormatting(line) {
-        if (/^\s*([-*+])\s+/.test(line)) return wrapInList(line, "ul");
-        if (/^\s*\d+\.\s+/.test(line)) return wrapInList(line, "ol");
-        return line;
-    }
+    function formatAIResponse(text) {
+        const input = String(text || '');
+        const fenceRe = /```([a-zA-Z0-9_-]+)?[ \t]*\n?([\s\S]*?)```/g;
 
-    function wrapInList(line, type) {
-        const content = line.replace(/^\s*([-*+]|\d+\.)\s+/, "");
-        return `<${type}><li>${content}</li></${type}>`;
+        let html = '';
+        let lastIndex = 0;
+        let foundFence = false;
+        let match;
+
+        while ((match = fenceRe.exec(input)) !== null) {
+            foundFence = true;
+
+            const before = input.slice(lastIndex, match.index);
+            if (before) {
+                html += renderParagraphsAndLists(before);
+            }
+
+            const lang = match[1] || 'java';
+            const code = match[2] || '';
+            html += renderCodeBlock(code, lang);
+
+            lastIndex = fenceRe.lastIndex;
+        }
+
+        const tail = input.slice(lastIndex);
+        if (tail) {
+            html += renderParagraphsAndLists(tail);
+        }
+
+        if (!foundFence && looksLikeJava(input)) {
+            return renderCodeBlock(input, 'java');
+        }
+
+        return html;
     }
 </script>
 
@@ -1576,8 +1709,44 @@
                             value: initialValue,
                             language: 'java',
                             theme: 'vs-dark',
-                            automaticLayout: true
+                            automaticLayout: true,
+                            contextmenu: !isNoAiRetentionAttempt()
                         });
+
+                        function isNoAiRetentionAttempt() {
+                            return Number(window.aiContext?.attemptNo || 1) === 2 &&
+                                {{ show_ai|yesno:"false,true" }};
+                        }
+
+                        function showPasteDisabledMessage() {
+                            alert("Pasting is disabled on this attempt. Please type your answer without using copied material.");
+                        }
+
+                        if (isNoAiRetentionAttempt()) {
+                            editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyV, function () {
+                                showPasteDisabledMessage();
+                            });
+
+                            editor.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Insert, function () {
+                                showPasteDisabledMessage();
+                            });
+
+                            const editorDomNode = editor.getDomNode();
+
+                            if (editorDomNode) {
+                                editorDomNode.addEventListener("paste", function (e) {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    e.stopImmediatePropagation();
+                                    showPasteDisabledMessage();
+                                }, true);
+
+                                editorDomNode.addEventListener("contextmenu", function (e) {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                }, true);
+                            }
+                        }
 
                         window.editors[qid] = editor;
 
