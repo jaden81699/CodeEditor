@@ -20,9 +20,11 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import logout, get_user_model
 from django.urls import reverse_lazy, reverse
 from django.contrib.auth.views import LoginView
+from django.utils.decorators import method_decorator
 from django.utils.timezone import make_aware
 from django.utils import timezone
 from django.views.decorators.cache import never_cache, cache_control
+from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_POST
 from datetime import timedelta
 
@@ -197,6 +199,8 @@ def get_improved_question_ids(user):
     return [qid for qid, ok1 in s1.items() if (ok1 is False and s2.get(qid) is True)]
 
 
+@ensure_csrf_cookie
+@never_cache
 def register_control(request):
     """
     Do NOT assign study group here. Group is assigned after pre-survey completes.
@@ -248,6 +252,8 @@ def register_control(request):
     return render(request, "login_register.html", {"form": login_form})
 
 
+@method_decorator(ensure_csrf_cookie, name="dispatch")
+@method_decorator(never_cache, name="dispatch")
 class ControlLoginView(LoginView):
     template_name = "login_register.html"
     redirect_authenticated_user = True

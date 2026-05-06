@@ -1002,46 +1002,7 @@
                             language: 'java',
                             theme: 'vs-dark',
                             automaticLayout: true,
-                            contextmenu: !isNoAiRetentionAttempt()
                         });
-
-                        function isNoAiRetentionAttempt() {
-                            return Number(window.aiContext?.attemptNo || 2) === 1 &&
-                                {{ show_ai|yesno:"false,true" }};
-                        }
-
-                        function showPasteDisabledMessage() {
-                            alert("Pasting is disabled on this attempt. Please type your answer without using copied material.");
-                        }
-
-                        if (isNoAiRetentionAttempt()) {
-                            // Disable common keyboard paste shortcuts.
-                            editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyV, function () {
-                                showPasteDisabledMessage();
-                            });
-
-                            editor.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Insert, function () {
-                                showPasteDisabledMessage();
-                            });
-
-                            const editorDomNode = editor.getDomNode();
-
-                            if (editorDomNode) {
-                                // Block paste events inside Monaco.
-                                editorDomNode.addEventListener("paste", function (e) {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    e.stopImmediatePropagation();
-                                    showPasteDisabledMessage();
-                                }, true);
-
-                                // Block right-click menu inside Monaco.
-                                editorDomNode.addEventListener("contextmenu", function (e) {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                }, true);
-                            }
-                        }
 
                         window.editors[qid] = editor;
 
