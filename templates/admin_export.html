@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Export Study Data</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 900px;
+            margin: 40px auto;
+            line-height: 1.5;
+            color: #222;
+        }
+
+        h1 {
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            color: #555;
+            margin-bottom: 28px;
+        }
+
+        .card {
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            padding: 18px 20px;
+            margin-bottom: 16px;
+            background: #fff;
+        }
+
+        .card h2 {
+            margin-top: 0;
+            margin-bottom: 8px;
+            font-size: 20px;
+        }
+
+        .card p {
+            margin-top: 0;
+            color: #555;
+        }
+
+        .button {
+            display: inline-block;
+            padding: 10px 14px;
+            background: #0b57d0;
+            color: #fff;
+            border-radius: 6px;
+            text-decoration: none;
+            font-weight: bold;
+        }
+
+        .button:hover {
+            background: #0846a8;
+        }
+
+        .note {
+            margin-top: 28px;
+            padding: 14px 16px;
+            background: #f6f8fa;
+            border-left: 4px solid #999;
+            color: #444;
+        }
+
+        code {
+            background: #f0f0f0;
+            padding: 2px 5px;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Export Study Data</h1>
+    <p class="subtitle">
+        Download cleaned CSV files for SPSS, Excel, R, or Python analysis.
+    </p>
+
+    <div class="card">
+        <h2>Submission-Level CSV</h2>
+        <p>
+            One row per participant, question, and attempt. This is the main file for
+            correctness, difficulty, AI availability, actual AI use, error categories,
+            timing, and conservative maintenance analysis.
+        </p>
+        <a class="button" href="{% url 'export_submission_level_csv' %}">
+            Download Submission-Level CSV
+        </a>
+    </div>
+
+    <div class="card">
+        <h2>Participant Summary CSV</h2>
+        <p>
+            One row per participant. Includes group, completion status, total scores,
+            AI call counts, data-quality flags, and complete-case exclusion flags.
+        </p>
+        <a class="button" href="{% url 'export_participant_summary_csv' %}">
+            Download Participant Summary CSV
+        </a>
+    </div>
+
+    <div class="card">
+        <h2>AI Calls CSV</h2>
+        <p>
+            One row per AI interaction. Useful for qualitative coding of participant prompts,
+            AI responses, debugging behavior, and actual AI use by question.
+        </p>
+        <a class="button" href="{% url 'export_ai_calls_csv' %}">
+            Download AI Calls CSV
+        </a>
+    </div>
+
+    <div class="note">
+        <strong>Access:</strong> This page is protected by Django staff/admin login.
+        Only users with <code>is_staff=True</code> can access these exports.
+    </div>
+</body>
+</html>

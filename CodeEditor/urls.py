@@ -21,7 +21,7 @@ import control_app
 from control_app.views import ControlLoginView
 from editor import views as experimental_views
 from control_app import views as control_views
-from editor.views import create_or_edit_questions, delete_question, ai_respond
+from editor.views import create_or_edit_questions, delete_question, ai_respond, editor
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -41,5 +41,9 @@ urlpatterns = [
     path("ai/telemetry/", control_app.views.ai_telemetry, name="ai_telemetry"),
     path("respond/", ai_respond, name="ai_respond"),
     path("raffle-entry/", control_app.views.raffle_entry, name="raffle-entry"),
-    path("raffle-entry-complete/", control_app.views.raffle_entry_complete, name="raffle-entry-complete")
+    path("raffle-entry-complete/", control_app.views.raffle_entry_complete, name="raffle-entry-complete"),
+    path("admin-export/", experimental_views.export_dashboard, name="export_dashboard"),
+    path("admin-export/submissions.csv", experimental_views.export_submission_level_csv, name="export_submission_level_csv"),
+    path("admin-export/participants.csv", experimental_views.export_participant_summary_csv, name="export_participant_summary_csv"),
+    path("admin-export/ai-calls.csv", experimental_views.export_ai_calls_csv, name="export_ai_calls_csv"),
 ]

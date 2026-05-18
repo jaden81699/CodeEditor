@@ -1,11 +1,14 @@
+import csv
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import time
 from pathlib import Path
 
+from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth import logout
 from django.contrib.auth.decorators import login_required, user_passes_test
 from django.db import transaction
@@ -265,7 +268,6 @@ def editor(request):
     resp["Cross-Origin-Opener-Policy"] = "same-origin"
     resp["Cross-Origin-Embedder-Policy"] = "require-corp"
     return resp
-
 
 
 @login_required(login_url='login')
@@ -795,3 +797,618 @@ def get_openai_client():
         # api_key = os.environ.get("OPENAI_API_KEY")
         raise RuntimeError("OPENAI_API_KEY is not set")
     return OpenAI(api_key=api_key)
+
+
+# ============================================================
+# Study Data Export Views
+# ============================================================
+
+MANUAL_RECOVERY_ROWS = {
+    # Participant 20 manually recovered second-attempt submissions
+    # Format: (user_id, question_id, attempt_no)
+    (20, 2, 2),
+    (20, 3, 2),
+}
+
+
+def _clean_csv_value(value):
+    """Keep CSV cells safe and readable."""
+    if value is None:
+        return ""
+    return str(value).replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _normalize_code_for_export(code):
+    """
+    Normalizes code for conservative same-code checks.
+    Removes comments and whitespace, but keeps the actual code tokens.
+    """
+    if not code:
+        return ""
+
+    code = str(code)
+
+    # Remove block comments
+    code = re.sub(r"/\*.*?\*/", "", code, flags=re.DOTALL)
+
+    # Remove line comments
+    code = re.sub(r"//.*", "", code)
+
+    # Remove all whitespace
+    code = re.sub(r"\s+", "", code)
+
+    return code.strip()
+
+
+def _question_difficulty_label(question):
+    if not question:
+        return ""
+
+    getter = getattr(question, "get_difficulty_display", None)
+    if callable(getter):
+        try:
+            return getter()
+        except Exception:
+            pass
+
+    raw = getattr(question, "difficulty", "") or ""
+    mapping = {
+        "EASY": "Easy",
+        "MED": "Medium",
+        "HARD": "Hard",
+    }
+    return mapping.get(raw, raw)
+
+
+def _question_difficulty_code(question):
+    label = _question_difficulty_label(question)
+    mapping = {
+        "Easy": 1,
+        "Medium": 2,
+        "Hard": 3,
+    }
+    return mapping.get(label, "")
+
+
+def _group_code(group):
+    if group == ParticipantProfile.CONTROL:
+        return 0
+    if group == ParticipantProfile.EXPERIMENTAL:
+        return 1
+    return ""
+
+
+def _question_context(group, attempt_no):
+    """
+    Helps distinguish unfair comparison contexts.
+
+    C attempt 1 = first exposure without AI
+    C attempt 2 = retry after wrong attempt 1, with AI
+    E attempt 1 = first exposure with AI
+    E attempt 2 = retest after correct attempt 1, without AI
+    """
+    if group == ParticipantProfile.CONTROL and attempt_no == 1:
+        return "first_exposure_no_ai"
+
+    if group == ParticipantProfile.CONTROL and attempt_no == 2:
+        return "control_retry_after_wrong_with_ai"
+
+    if group == ParticipantProfile.EXPERIMENTAL and attempt_no == 1:
+        return "first_exposure_ai"
+
+    if group == ParticipantProfile.EXPERIMENTAL and attempt_no == 2:
+        return "experimental_retest_after_ai_correct_no_ai"
+
+    return "unknown"
+
+
+def _error_category(submission):
+    """
+    Conservative analysis category for SPSS/R/Excel.
+    This does not change the raw grading; it just classifies the result.
+    """
+    if submission.is_correct:
+        return "correct"
+
+    compile_error = (submission.compile_error or "").strip()
+    runtime_error = (submission.runtime_error or "").strip()
+
+    if compile_error:
+        return "compile_error"
+
+    if runtime_error:
+        return "runtime_error_or_timeout"
+
+    submitted_norm = _normalize_code_for_export(submission.code)
+    starter_norm = _normalize_code_for_export(getattr(submission.question, "user_starter_code", ""))
+
+    if not submitted_norm:
+        return "starter_or_blank"
+
+    if starter_norm and submitted_norm == starter_norm:
+        return "starter_or_blank"
+
+    # Common incomplete patterns: method body present but no return for a return-based task.
+    if "return" not in (submission.code or ""):
+        return "starter_or_incomplete"
+
+    return "wrong_logic_or_output"
+
+
+def _safe_pass_rate(passed, total):
+    try:
+        if total:
+            return round(float(passed) / float(total), 4)
+    except Exception:
+        pass
+    return ""
+
+
+def _actual_ai_call_count_map():
+    """
+    Returns counts keyed by (user_id, question_id, attempt_no).
+    This lets us distinguish:
+    - AI available from Submission.used_ai
+    - actual AI use from AICall records
+    """
+    counts = {}
+
+    calls = AICall.objects.exclude(question_id__isnull=True)
+
+    for call in calls:
+        key = (call.user_id, call.question_id, call.attempt_no)
+        counts[key] = counts.get(key, 0) + 1
+
+    return counts
+
+
+def _submission_lookup():
+    """
+    Lookup submissions by (user_id, question_id, attempt_no)
+    so we can compute same-code and retention variables.
+    """
+    lookup = {}
+
+    submissions = Submission.objects.select_related("question").all()
+
+    for sub in submissions:
+        key = (sub.user_id, sub.question_id, sub.attempt_no)
+        lookup[key] = sub
+
+    return lookup
+
+
+@staff_member_required
+def export_dashboard(request):
+    """
+    Admin-only export dashboard.
+
+    URL: /admin-export/
+    """
+    return render(request, "admin_export.html")
+
+
+@staff_member_required
+def export_submission_level_csv(request):
+    """
+    One row per participant/question/attempt.
+
+    This is the most important CSV for SPSS because it preserves:
+    - group
+    - attempt
+    - question difficulty
+    - AI availability
+    - actual AI use
+    - correctness
+    - error category
+    - conservative maintenance variables
+    """
+    response = HttpResponse(content_type="text/csv")
+    response["Content-Disposition"] = 'attachment; filename="submission_level_export.csv"'
+
+    writer = csv.writer(response)
+
+    writer.writerow([
+        "user_id",
+        "username",
+        "group",
+        "group_code",
+        "attempt_no",
+        "question_id",
+        "question_name",
+        "difficulty",
+        "difficulty_code",
+        "question_context",
+
+        "ai_available",
+        "actual_ai_used",
+        "ai_call_count_for_question",
+
+        "is_correct",
+        "passed_test_cases",
+        "total_test_cases",
+        "testcase_pass_rate",
+        "failed_testcase_ids",
+
+        "compile_error_present",
+        "runtime_error_present",
+        "error_category",
+
+        "starter_or_blank_code",
+        "same_code_as_prior_attempt",
+        "same_code_as_prior_ai_attempt",
+
+        "experimental_retention_eligible",
+        "raw_no_ai_retained",
+        "conservative_no_ai_maintained",
+
+        "time_spent_ms",
+        "time_spent_seconds",
+        "zero_time_flag",
+        "manual_recovery",
+
+        "timestamp",
+    ])
+
+    ai_counts = _actual_ai_call_count_map()
+    sub_lookup = _submission_lookup()
+
+    submissions = (
+        Submission.objects
+        .select_related("user", "question", "user__participantprofile")
+        .order_by("user_id", "attempt_no", "question_id")
+    )
+
+    for sub in submissions:
+        user = sub.user
+
+        try:
+            profile = user.participantprofile
+            group = profile.group
+        except ParticipantProfile.DoesNotExist:
+            group = ""
+
+        question = sub.question
+        question_name = getattr(question, "question_name", "") or f"Question {question.id}"
+        difficulty = _question_difficulty_label(question)
+        difficulty_code = _question_difficulty_code(question)
+
+        ai_key = (sub.user_id, sub.question_id, sub.attempt_no)
+        ai_call_count = ai_counts.get(ai_key, 0)
+
+        ai_available = 1 if sub.used_ai else 0
+        actual_ai_used = 1 if ai_call_count > 0 else 0
+
+        compile_error_present = 1 if (sub.compile_error or "").strip() else 0
+        runtime_error_present = 1 if (sub.runtime_error or "").strip() else 0
+
+        error_category = _error_category(sub)
+        starter_or_blank_code = 1 if error_category in {
+            "starter_or_blank",
+            "starter_or_incomplete",
+        } else 0
+
+        current_code_norm = _normalize_code_for_export(sub.code)
+
+        prior_sub = sub_lookup.get((sub.user_id, sub.question_id, sub.attempt_no - 1))
+        prior_code_norm = _normalize_code_for_export(prior_sub.code) if prior_sub else ""
+
+        same_code_as_prior_attempt = 1 if prior_code_norm and current_code_norm == prior_code_norm else 0
+
+        same_code_as_prior_ai_attempt = 0
+        experimental_retention_eligible = 0
+        raw_no_ai_retained = ""
+        conservative_no_ai_maintained = ""
+
+        # Experimental group attempt 2 = no-AI retest after AI-supported success.
+        if group == ParticipantProfile.EXPERIMENTAL and sub.attempt_no == 2:
+            ai_attempt_sub = sub_lookup.get((sub.user_id, sub.question_id, 1))
+
+            if ai_attempt_sub and ai_attempt_sub.is_correct:
+                experimental_retention_eligible = 1
+                raw_no_ai_retained = 1 if sub.is_correct else 0
+
+                ai_attempt_code_norm = _normalize_code_for_export(ai_attempt_sub.code)
+                same_code_as_prior_ai_attempt = (
+                    1 if ai_attempt_code_norm and current_code_norm == ai_attempt_code_norm else 0
+                )
+
+                conservative_no_ai_maintained = (
+                    1 if sub.is_correct and not same_code_as_prior_ai_attempt else 0
+                )
+
+        time_seconds = ""
+        try:
+            time_seconds = round(float(sub.time_spent_ms) / 1000.0, 3)
+        except Exception:
+            pass
+
+        zero_time_flag = 1 if sub.time_spent_ms == 0 else 0
+        manual_recovery = 1 if (sub.user_id, sub.question_id, sub.attempt_no) in MANUAL_RECOVERY_ROWS else 0
+
+        writer.writerow([
+            sub.user_id,
+            _clean_csv_value(user.username),
+            group,
+            _group_code(group),
+            sub.attempt_no,
+            sub.question_id,
+            _clean_csv_value(question_name),
+            difficulty,
+            difficulty_code,
+            _question_context(group, sub.attempt_no),
+
+            ai_available,
+            actual_ai_used,
+            ai_call_count,
+
+            1 if sub.is_correct else 0,
+            sub.passed_test_cases,
+            sub.total_test_cases,
+            _safe_pass_rate(sub.passed_test_cases, sub.total_test_cases),
+            _clean_csv_value(sub.failed_testcase_ids),
+
+            compile_error_present,
+            runtime_error_present,
+            error_category,
+
+            starter_or_blank_code,
+            same_code_as_prior_attempt,
+            same_code_as_prior_ai_attempt,
+
+            experimental_retention_eligible,
+            raw_no_ai_retained,
+            conservative_no_ai_maintained,
+
+            sub.time_spent_ms,
+            time_seconds,
+            zero_time_flag,
+            manual_recovery,
+
+            _clean_csv_value(sub.timestamp),
+        ])
+
+    return response
+
+
+@staff_member_required
+def export_participant_summary_csv(request):
+    """
+    One row per participant.
+
+    Useful for high-level analyses:
+    - completion status
+    - total correctness
+    - total AI use
+    - participant-level flags
+    """
+    response = HttpResponse(content_type="text/csv")
+    response["Content-Disposition"] = 'attachment; filename="participant_summary_export.csv"'
+
+    writer = csv.writer(response)
+
+    writer.writerow([
+        "user_id",
+        "username",
+        "group",
+        "group_code",
+
+        "pre_assessment_completed",
+        "coding_completed",
+        "post_assessment_started",
+        "post_assessment_completed",
+        "raffle_page_completed",
+
+        "first_attempt_correct_profile",
+        "first_attempt_incorrect_profile",
+        "second_attempt_correct_profile",
+
+        "attempt1_submission_count",
+        "attempt1_correct_count",
+        "attempt1_incorrect_count",
+
+        "attempt2_submission_count",
+        "attempt2_correct_count",
+        "attempt2_incorrect_count",
+
+        "total_submission_count",
+        "total_correct_count",
+        "total_incorrect_count",
+
+        "total_ai_calls",
+        "ai_calls_attempt1",
+        "ai_calls_attempt2",
+        "actual_ai_user_any",
+
+        "zero_time_submission_count",
+        "starter_or_blank_submission_count",
+        "compile_error_submission_count",
+        "runtime_error_submission_count",
+
+        "manual_recovery_flag",
+        "exclude_complete_case_flag",
+        "notes",
+    ])
+
+    profiles = (
+        ParticipantProfile.objects
+        .select_related("user")
+        .filter(group__in=[
+            ParticipantProfile.CONTROL,
+            ParticipantProfile.EXPERIMENTAL,
+        ])
+        .order_by("user_id")
+    )
+
+    ai_counts_by_user = {}
+    ai_counts_by_user_attempt = {}
+
+    for call in AICall.objects.all():
+        ai_counts_by_user[call.user_id] = ai_counts_by_user.get(call.user_id, 0) + 1
+
+        key = (call.user_id, call.attempt_no)
+        ai_counts_by_user_attempt[key] = ai_counts_by_user_attempt.get(key, 0) + 1
+
+    for profile in profiles:
+        user = profile.user
+        subs = Submission.objects.filter(user=user).select_related("question")
+
+        attempt1 = subs.filter(attempt_no=1)
+        attempt2 = subs.filter(attempt_no=2)
+
+        total_submission_count = subs.count()
+        total_correct_count = subs.filter(is_correct=True).count()
+        total_incorrect_count = subs.filter(is_correct=False).count()
+
+        zero_time_count = subs.filter(time_spent_ms=0).count()
+        compile_error_count = subs.exclude(compile_error="").count()
+        runtime_error_count = subs.exclude(runtime_error="").count()
+
+        starter_count = 0
+        for sub in subs:
+            if _error_category(sub) in {"starter_or_blank", "starter_or_incomplete"}:
+                starter_count += 1
+
+        manual_recovery_flag = 1 if user.id == 20 else 0
+
+        exclude_complete_case_flag = 0
+        notes = []
+
+        if not profile.post_assessment_completed or not profile.raffle_page_completed:
+            exclude_complete_case_flag = 1
+            notes.append("Incomplete post/raffle flow")
+
+        if not profile.both_ai_and_non_ai_portion_of_code_assessment_completed:
+            exclude_complete_case_flag = 1
+            notes.append("Coding flow incomplete")
+
+        if user.id == 20:
+            notes.append(
+                "Manual second-attempt recovery after platform submission failure; exclude manual rows from timing analysis")
+
+        if zero_time_count:
+            notes.append("Contains zero-time submission rows")
+
+        writer.writerow([
+            user.id,
+            _clean_csv_value(user.username),
+            profile.group,
+            _group_code(profile.group),
+
+            1 if profile.pre_assessment_completed else 0,
+            1 if profile.both_ai_and_non_ai_portion_of_code_assessment_completed else 0,
+            1 if profile.post_assessment_started else 0,
+            1 if profile.post_assessment_completed else 0,
+            1 if profile.raffle_page_completed else 0,
+
+            profile.first_attempt_correct,
+            profile.first_attempt_incorrect,
+            profile.second_attempt_correct,
+
+            attempt1.count(),
+            attempt1.filter(is_correct=True).count(),
+            attempt1.filter(is_correct=False).count(),
+
+            attempt2.count(),
+            attempt2.filter(is_correct=True).count(),
+            attempt2.filter(is_correct=False).count(),
+
+            total_submission_count,
+            total_correct_count,
+            total_incorrect_count,
+
+            ai_counts_by_user.get(user.id, 0),
+            ai_counts_by_user_attempt.get((user.id, 1), 0),
+            ai_counts_by_user_attempt.get((user.id, 2), 0),
+            1 if ai_counts_by_user.get(user.id, 0) > 0 else 0,
+
+            zero_time_count,
+            starter_count,
+            compile_error_count,
+            runtime_error_count,
+
+            manual_recovery_flag,
+            exclude_complete_case_flag,
+            "; ".join(notes),
+        ])
+
+    return response
+
+
+@staff_member_required
+def export_ai_calls_csv(request):
+    """
+    One row per AI call.
+
+    Useful for qualitative coding:
+    - prompt type
+    - debugging vs clarification vs solution request
+    - actual AI use by question
+    """
+    response = HttpResponse(content_type="text/csv")
+    response["Content-Disposition"] = 'attachment; filename="ai_calls_export.csv"'
+
+    writer = csv.writer(response)
+
+    writer.writerow([
+        "ai_call_id",
+        "user_id",
+        "username",
+        "group",
+        "group_code",
+        "attempt_no",
+        "question_id",
+        "question_name",
+        "difficulty",
+        "difficulty_code",
+        "conversation_id",
+        "turn_index",
+        "model",
+        "user_text",
+        "assistant_text",
+        "history_window_size",
+        "created_at",
+    ])
+
+    calls = (
+        AICall.objects
+        .select_related("user", "question", "user__participantprofile")
+        .order_by("user_id", "attempt_no", "question_id", "created_at")
+    )
+
+    for call in calls:
+        user = call.user
+
+        try:
+            profile = user.participantprofile
+            group = profile.group
+        except ParticipantProfile.DoesNotExist:
+            group = ""
+
+        question = call.question
+        question_id = question.id if question else ""
+        question_name = getattr(question, "question_name", "") if question else ""
+        difficulty = _question_difficulty_label(question) if question else ""
+        difficulty_code = _question_difficulty_code(question) if question else ""
+
+        writer.writerow([
+            call.id,
+            call.user_id,
+            _clean_csv_value(user.username),
+            group,
+            _group_code(group),
+            call.attempt_no,
+            question_id,
+            _clean_csv_value(question_name),
+            difficulty,
+            difficulty_code,
+            _clean_csv_value(call.conversation_id),
+            call.turn_index,
+            _clean_csv_value(call.model),
+            _clean_csv_value(call.user_text),
+            _clean_csv_value(call.assistant_text),
+            call.history_window_size,
+            _clean_csv_value(call.created_at),
+        ])
+
+    return response
